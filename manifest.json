@@ -22,7 +22,7 @@
       "port": 4202,
       "stateDir": "",
       "sourceRoot": "",
-      "accountUsage": false
+      "accountUsage": "Off"
     },
     "schema": [
       { "key": "healthIntervalSec", "type": "integer", "label": "Health poll interval (seconds)", "min": 2, "max": 60, "step": 1, "defaultValue": 4 },

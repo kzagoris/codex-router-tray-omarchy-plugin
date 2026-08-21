@@ -1,12 +1,15 @@
 import QtQuick
+import QtQuick.Controls
 import qs.Commons
 import qs.Ui
 
 // Codex Router popup panel, anchored to the bar button.
 //
-// Phase 1 stub: palette and panel chrome only. The sections described in
-// PLAN.md §4 (hero, status box, mode switches, activity, usage, providers,
-// maintenance) are built up in phases 3 and 4 on top of this skeleton.
+// Phase 2 skeleton: palette, panel chrome, and keyboard wiring. The sections
+// described in PLAN.md §4 (status box, mode switches, activity, usage,
+// providers, maintenance) are built up in phases 3 and 4 on top of this
+// structure — the Flickable/KeyCatcher frame is already the final shape, so
+// later phases only add children to `column`.
 Panel {
   id: root
   moduleName: "kzagoris.codex-router-tray"
@@ -21,7 +24,8 @@ Panel {
   // nested panel; everything the bar identifies a panel by has to be that
   // widget (see clock).
   property var hostWidget: null
-  readonly property var barIdentity: hostWidget || root  // ------------------------------------------------------------- palette
+
+  // ------------------------------------------------------------- palette
   //
   // Fills are always alpha steps of foreground so the panel is theme-proof;
   // alarm color only ever comes from `urgent`.
@@ -37,8 +41,29 @@ Panel {
     return Qt.rgba(c.r, c.g, c.b, a)
   }
 
-  function refresh() {
-    // RouterService refresh arrives with phase 3.
+  // ---- Open/close. Overridden (not inherited) so a hotkey summon suppresses
+  //      the bar's center hover reveal: summoning moves no pointer, and the
+  //      indicators would stay lit behind the panel otherwise (see clock).
+  function open() {
+    root.controller.show()
+    // Set after showing, not before: showing hands the popout coordinator
+    // over, which closes whichever panel was open, and that close clears the
+    // shared flag. Deferring means the panel taking over always wins.
+    Qt.callLater(function() {
+      if (root.opened) setCenterHoverRevealSuppressed(true)
+    })
+  }
+
+  function close() {
+    setCenterHoverRevealSuppressed(false)
+    root.close()
+  }
+
+  // Summoning by hotkey moves no pointer, so a hover the bar was still
+  // holding must not keep the center indicators revealed behind the panel.
+  function setCenterHoverRevealSuppressed(value) {
+    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+      root.bar.centerHoverRevealSuppressed = value
   }
 
   // Tab-style walk to the neighboring popout, keyed by the bar widget —
@@ -49,51 +74,82 @@ Panel {
     return false
   }
 
+  // The bar identifies this panel by its host slot widget.
+  readonly property var barIdentity: hostWidget || root
+
+  function refresh() {
+    if (hostWidget && hostWidget.router) hostWidget.router.pollHealth()
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
+    focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(200))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
 
-    Column {
-      id: column
-      width: panel.width
-      spacing: Style.space(12)
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
 
-      PanelHero {
-        width: parent.width
-        title: "Codex Router"
-        meta: ""
-        foreground: root.foreground
-        fontFamily: root.fontFamily
+      onCloseRequested: root.close()
+      onTabRequested: function(direction) { root.switchPanel(direction) }
 
-        iconComponent: Component {
-          Item {
-            width: Style.font.display
-            height: Style.font.display
+      // KeyboardPanel paints a card sized to contentWidth on a full-screen
+      // surface; the Flickable is what keeps column measured against the
+      // *card*, never the screen.
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            Text {
-              anchors.centerIn: parent
-              text: "󰒋"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.display
+        Column {
+          id: column
+          width: panelFlick.width
+          spacing: Style.space(12)
+
+          PanelHero {
+            width: parent.width
+            title: "Codex Router"
+            meta: ""
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+
+            iconComponent: Component {
+              Item {
+                width: Style.font.display
+                height: Style.font.display
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "󰒋"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.display
+                }
+              }
             }
           }
-        }
-      }
 
-      Text {
-        width: parent.width
-        text: "Router status will appear here."
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        horizontalAlignment: Text.AlignHCenter
-        wrapMode: Text.WordWrap
+          Text {
+            width: parent.width
+            text: "Router status will appear here."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+          }
+        }
       }
     }
   }

@@ -7,11 +7,11 @@ import qs.Ui
 // Codex Router bar widget: a router glyph with an overlaid status dot, plus
 // the host for the router panel.
 //
-// Phase 1 scaffold — the dot is static and the label is the module name.
-// RouterService wiring (live health state, provider text, pulse animation)
-// lands in phase 2; the shape contract below already matches what the Bar
-// expects from any panel-hosting widget, so summon/hide routing works from
-// day one.
+// The dot is the whole point of the widget — four states, legible at arm's
+// length (PLAN.md §4): green=idle+ok, amber pulsing=generating,
+// red=degraded/error, gray=offline. Green and amber have no palette token
+// (the theme kit is monochrome plus urgent), so they are local constants on
+// the wifiqr `onScrimUrgent` precedent; red and gray come from the theme.
 BarWidget {
   id: root
   moduleName: "kzagoris.codex-router-tray"
@@ -21,17 +21,69 @@ BarWidget {
   // every state so the dot carries all the signal.
   readonly property string routerGlyph: "󰒋"
 
+  // ------------------------------------------------------------- service
+
+  RouterService {
+    id: router
+    healthIntervalSec: root.healthIntervalSec
+    portOverride: root.routerPortSetting
+  }
+
+  // ------------------------------------------------------------ settings
+
+  readonly property int healthIntervalSec: {
+    var n = parseInt(setting("healthIntervalSec", 4), 10)
+    return isFinite(n) && n >= 2 ? n : 4
+  }
+  readonly property string routerPortSetting: {
+    var p = parseInt(setting("port", 4202), 10)
+    return isFinite(p) && p >= 1024 && p <= 65535 ? String(p) : ""
+  }
+
   // ------------------------------------------------------------ palette
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Color.urgent
+
+  // Traffic-light states read at a glance across the desk; themes rarely
+  // carry tokens for them. Chosen to sit on any bar background next to the
+  // theme's own urgent/muted.
+  readonly property color okColor: "#6fae62"
+  readonly property color generatingColor: "#c9973f"
+
+  readonly property color dotColor: {
+    if (router.state === "generating") return generatingColor
+    if (router.state === "error") return urgent
+    if (router.state === "idle") return okColor
+    return Color.muted
+  }
+
+  // While traffic flows the dot breathes; anything static reads "dead"
+  // during a long generation.
+  readonly property bool pulsing: router.state === "generating"
+  onPulsingChanged: if (!pulsing) statusDot.opacity = 1
 
   // ------------------------------------------------------------- label
 
-  // Manifest enum: "Icon only" | "Provider name". Until RouterService exists
-  // there is no provider name to show, so label mode paints the module name.
+  // Manifest enum: "Icon only" | "Provider name". The provider id comes
+  // straight off the health payload's activity block; before the first
+  // successful poll (and whenever the router is offline) fall back to the
+  // module name.
   readonly property bool providerLabelWanted: setting("showProviderText", "Icon only") === "Provider name"
-  readonly property string labelText: "Codex Router"
+  readonly property string labelText: router.providerName !== "" ? router.providerName : "Codex Router"
   readonly property bool labelVisible: providerLabelWanted && !vertical
+
+  function tooltipSummary() {
+    if (router.state === "generating")
+      return "Codex Router — generating (" + router.activeCount + " active)"
+    if (router.state === "error") {
+      var names = router.degradedNames.join(", ")
+      return names !== "" ? "Codex Router — degraded: " + names : "Codex Router — error"
+    }
+    if (router.state === "idle")
+      return "Codex Router — idle" + (router.version !== "" ? " · v" + router.version : "")
+    return "Codex Router — offline"
+  }
 
   // ---- Panel popup. Shape contract for shell.summon/hide/toggle routing:
   //      Bar.findPanelWidget requires open/close/opened on the bar-widget
@@ -51,6 +103,7 @@ BarWidget {
   }
 
   function refresh() {
+    router.pollHealth()
     if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh()
   }
 
@@ -113,10 +166,14 @@ BarWidget {
     text: ""
     labelVisible: false
     hasVisualContent: true
-    tooltipText: root.labelVisible ? "" : "Codex Router"
-    // Wide enough for mark + label; plain icon slot otherwise. Vertical bars
-    // never show the label, so they keep the natural slot height/width swap.
-    fixedWidth: root.vertical || !root.labelVisible ? -1 : contentRow.implicitWidth + scaledHorizontalMargin * 2
+    tooltipText: root.tooltipSummary()
+    // An icon-only slot must still be a full icon slot: WidgetButton's own
+    // fallback measures its internal (hidden) label, which is empty here,
+    // and would squeeze the mark into a sliver that clips the status dot.
+    fixedWidth: root.vertical ? -1
+      : root.labelVisible ? contentRow.implicitWidth + scaledHorizontalMargin * 2
+      : Style.bar.iconSlot
+    fixedHeight: root.vertical && !root.labelVisible ? Style.bar.iconSlot : -1
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton) return // web-panel opener arrives with the controls (phase 4)
@@ -143,20 +200,27 @@ BarWidget {
           renderType: Text.NativeRendering
         }
 
-        // Status dot on the glyph's lower-right edge. Static dim gray until
-        // RouterService starts reporting health (phase 2).
+        // Status dot on the glyph's lower-right edge.
         Rectangle {
           id: statusDot
           width: Style.space(7)
           height: width
           radius: width / 2
-          color: Qt.darker(root.foreground, 1.8)
+          color: root.dotColor
           border.color: root.bar ? root.bar.background : Color.background
           border.width: 1
           anchors.horizontalCenter: glyph.horizontalCenter
           anchors.horizontalCenterOffset: Math.round(glyph.implicitWidth * 0.30)
           anchors.verticalCenter: glyph.verticalCenter
           anchors.verticalCenterOffset: Math.round(glyph.implicitHeight * 0.22)
+
+          SequentialAnimation on opacity {
+            running: root.pulsing
+            loops: Animation.Infinite
+
+            NumberAnimation { to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 1; duration: 650; easing.type: Easing.InOutQuad }
+          }
         }
       }
 
