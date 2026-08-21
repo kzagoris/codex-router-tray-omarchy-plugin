@@ -27,6 +27,9 @@ BarWidget {
     id: router
     healthIntervalSec: root.healthIntervalSec
     portOverride: root.routerPortSetting
+    dataIntervalSec: root.dataIntervalSec
+    stateDirOverride: root.stateDirSetting
+    accountUsageEnabled: root.accountUsageWanted
   }
 
   // Cross-file access goes through an explicit property: ids are file-scoped,
@@ -47,6 +50,23 @@ BarWidget {
     var p = parseInt(raw, 10)
     return isFinite(p) && p >= 1024 && p <= 65535 ? String(p) : ""
   }
+
+  readonly property int dataIntervalSec: {
+    var n = parseInt(setting("dataIntervalSec", 30), 10)
+    return isFinite(n) && n >= 15 ? n : 30
+  }
+
+  function expandPath(raw) {
+    var text = String(raw || "").trim()
+    var home = Quickshell.env("HOME")
+    if (text === "~" && home !== "") return home
+    if (text.indexOf("~/") === 0 && home !== "") return home + text.slice(1)
+    return text
+  }
+
+  readonly property string stateDirSetting: expandPath(settings ? settings["stateDir"] : "")
+
+  readonly property bool accountUsageWanted: setting("accountUsage", "Off") === "On"
 
   // ------------------------------------------------------------ palette
 
