@@ -125,6 +125,8 @@ All traffic is loopback-only. No credentials ever flow through the plugin.
 
 ## Development
 
+From the repository root (not this folder):
+
 ```sh
 ./scripts/lint.sh        # Qt6 qmllint with the shell's import paths
 ./sync.sh                # copy plugin/ into ~/.config/omarchy/plugins/
