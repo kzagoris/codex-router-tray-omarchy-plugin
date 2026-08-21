@@ -4,11 +4,11 @@ import Quickshell.Io
 
 // Live router state, polled from the bar widget.
 //
-// Owns everything that talks to the codex-router HTTP surface: the
-// unauthenticated /health poll (phase 2), and the authenticated panel/invoke
-// bridge (phase 3) that reads snapshot/provider_setup/provider_usage through
-// the caller capability. Mutations via the control CLI arrive with phase 4
-// behind the same instance, so consumers bind to one object.
+// Owns everything that talks to the codex-router: the unauthenticated
+// /health poll (phase 2), the authenticated panel/invoke bridge (phase 3)
+// that reads snapshot/provider_setup/provider_usage through the caller
+// capability, and the mutating half (phase 4) — serialized control-CLI runs
+// plus the web-panel opener.
 //
 // Health payload shape (verified against codex-router 0.4.0-beta.4):
 //   { ok, service, version, degraded: [name...],
@@ -26,6 +26,7 @@ Item {
   // Settings overrides; empty string means "use the router's default".
   property string portOverride: ""
   property string stateDirOverride: ""
+  property string sourceRootOverride: ""
   // Slow ChatGPT quota call; off until the user asks for it.
   property bool accountUsageEnabled: false
 
@@ -394,6 +395,203 @@ Item {
       root.accountUsageFailed = error !== null
       if (error === null) root.accountUsage = value
     })
+  }
+
+  // ---------------------------------------------------- control CLI runs
+  //
+  // Mutations shell out to the router's own control CLI exactly like the
+  // Tauri tray does (PLAN.md §2.3): node <root>/src/control.mjs <args> with
+  // MODEL_ROUTER_TARGET=codex and cwd at the checkout. One process runs at a
+  // time; further requests queue behind it so a slow catalog rebuild can
+  // never overlap a toggle clicked in impatience.
+
+  // Same resolution order as the tray: explicit setting, then env, then the
+  // standard data locations. No existence probe — a wrong root surfaces as
+  // an honest spawn failure instead of silent fallback.
+  readonly property string _envSourceRoot: Quickshell.env("MODEL_ROUTER_SOURCE_ROOT") || ""
+  readonly property string _envDataHome: Quickshell.env("XDG_DATA_HOME") || ""
+  readonly property string sourceRoot: {
+    if (root.sourceRootOverride !== "") return root.sourceRootOverride
+    if (root._envSourceRoot !== "") return root._envSourceRoot
+    if (root._envDataHome !== "") return root._envDataHome + "/codex-router"
+    var home = Quickshell.env("HOME") || ""
+    return home !== "" ? home + "/.local/share/codex-router" : ""
+  }
+
+  // The shell is a GUI session and inherits whatever PATH systemd gave it;
+  // the tray widens the same way before spawning node.
+  readonly property string controlPath: {
+    var parts = []
+    var home = Quickshell.env("HOME") || ""
+    if (home !== "") parts.push(home + "/.npm-global/bin", home + "/.local/bin")
+    parts.push("/usr/local/bin", "/usr/bin")
+    var current = Quickshell.env("PATH")
+    if (current) parts.push(current)
+    return parts.join(":")
+  }
+
+  readonly property string nodeCommand: {
+    var configured = String(Quickshell.env("MODEL_ROUTER_NODE") || "").trim()
+    return configured !== "" ? configured : "node"
+  }
+
+  property bool mutationRunning: false
+  property string mutationLabel: ""
+  property string mutationError: ""
+
+  property var _controlQueue: []
+  property bool _controlTimedOut: false
+  property string _controlStdout: ""
+  property string _controlStderr: ""
+
+  // onDone(error): error === null on success, human-readable otherwise. The
+  // CLI's own output is deliberately not handed back — every consumer wants
+  // fresh state, and fresh state comes from the standard HTTP re-read, so
+  // "mutate, then re-read" lives in exactly one place (see onExited).
+  function runControl(label, args, onDone) {
+    var clean = []
+    for (var i = 0; i < args.length; i++) {
+      var arg = String(args[i])
+      // Every argument is generated here, but provider ids reach a command
+      // line either way — constrain them to the shape the router itself
+      // enforces rather than trusting the caller.
+      if (!/^-{0,2}[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(arg)) {
+        if (onDone) onDone("Internal error: refusing to run the control command.")
+        return
+      }
+      clean.push(arg)
+    }
+    if (root.sourceRoot === "") {
+      if (onDone) onDone("Router checkout not found — set the source directory in the widget settings.")
+      return
+    }
+    _controlQueue.push({ label: String(label || ""), args: clean, onDone: onDone })
+    _drainControl()
+  }
+
+  function _drainControl() {
+    if (root.mutationRunning || root._controlQueue.length === 0) return
+
+    var job = root._controlQueue.shift()
+    root.mutationRunning = true
+    root.mutationLabel = job.label
+    root.mutationError = ""
+    root._controlTimedOut = false
+    root._controlStdout = ""
+    root._controlStderr = ""
+
+    controlProc.job = job
+    // Catalog rebuilds (set-apply) get the tray's extended budget; everything
+    // else answers well inside two minutes.
+    controlWatchdog.interval = job.args[0] === "set-apply" ? 330000 : 120000
+    controlProc.command = [root.nodeCommand, root.sourceRoot + "/src/control.mjs"].concat(job.args)
+    controlProc.workingDirectory = root.sourceRoot
+    controlProc.running = true
+    controlWatchdog.restart()
+  }
+
+  // Shared tail of every control run: release the lock, record the error,
+  // hand the result back, pull the next queued job.
+  function _finishControlJob(error, exitCode) {
+    controlWatchdog.stop()
+
+    var finishedJob = controlProc.job
+    controlProc.job = null
+    root.mutationRunning = false
+
+    if (error === null && exitCode !== 0) {
+      var detail = String(root._controlStderr || "").trim()
+      if (detail === "") detail = String(root._controlStdout || "").trim()
+      error = detail !== "" ? root._truncate(detail, 500) : "The router command failed."
+    }
+
+    if (error !== null) {
+      root.mutationError = error
+      if (finishedJob && finishedJob.onDone) finishedJob.onDone(error)
+    } else {
+      if (finishedJob && finishedJob.onDone) finishedJob.onDone(null)
+      // Mutate, then re-read. Service commands are skipped: the daemon is
+      // down or bouncing by definition, and both poll timers pick the new
+      // instance up on their own cadence.
+      if (finishedJob && finishedJob.args[0] !== "service") {
+        root.pollHealth()
+        root.refreshData()
+      }
+    }
+
+    root._drainControl()
+  }
+
+  Process {
+    id: controlProc
+    running: false
+    environment: ({ MODEL_ROUTER_TARGET: "codex", PATH: root.controlPath })
+
+    property var job: null
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root._controlStdout = text
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root._controlStderr = text
+    }
+
+    // Quickshell flushes both collectors before emitting exited, so the
+    // captured output is complete here.
+    onExited: function(exitCode) {
+      root._finishControlJob(root._controlTimedOut
+        ? "The router command did not finish in time." : null, exitCode)
+    }
+
+    // A binary that cannot even be spawned (no Node on PATH) never reaches
+    // exited: quickshell drops the process silently. A running→false flip
+    // with a job still attached is exactly that case — onExited always
+    // detaches the job first in the normal flow.
+    onRunningChanged: {
+      if (!running && controlProc.job !== null)
+        root._finishControlJob(
+          "Could not start the control process — is Node.js installed?", -1)
+    }
+  }
+
+  Timer {
+    id: controlWatchdog
+    interval: 120000
+    repeat: false
+    onTriggered: {
+      if (!controlProc.running) return
+      root._controlTimedOut = true
+      controlProc.signal(9)
+    }
+  }
+
+  // ------------------------------------------------------- web panel link
+
+  // The plugin's bin/panel: build the capability URL and hand it to
+  // xdg-open. The URL embeds the caller secret, so it exists only inside
+  // this call — never logged, nothing collected from the opener.
+  function openWebPanel() {
+    if (!root.hasCallerSecret) {
+      console.warn("codex-router-tray", "No caller key — cannot open the web panel.")
+      return false
+    }
+    webPanelOpener.command = ["xdg-open",
+      "http://127.0.0.1:" + root.port + "/_codex-router/" + root.callerSecret + "/panel/"]
+    webPanelOpener.running = true
+    return true
+  }
+
+  Process {
+    id: webPanelOpener
+    running: false
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      // Generic on purpose: opener diagnostics name no URLs.
+      onStreamFinished: if (text.trim() !== "") console.warn("codex-router-tray", "xdg-open failed")
+    }
   }
 
   // --------------------------------------------------------------- timers

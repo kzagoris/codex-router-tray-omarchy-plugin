@@ -6,10 +6,11 @@ import "Model.js" as Model
 
 // Codex Router popup panel, anchored to the bar button.
 //
-// Read-only surface (phase 3): live state hero, guidance/status box,
-// request activity, and per-provider token usage drawn through the same
-// command bridge the router's browser panel uses. Mutating controls land
-// in phase 4 on top of this column.
+// Full surface: live state hero, guidance/status box, mode switches,
+// request activity, per-provider token usage, the provider catalog with
+// enable toggles, and maintenance actions. Reads go through the same command
+// bridge the router's browser panel uses; mutations shell out to the
+// router's control CLI via the shared RouterService.
 //
 // Visual vocabulary follows omarchy.agents: fills are alpha steps of
 // foreground so the panel is theme-proof, alarm color only ever comes from
@@ -223,6 +224,106 @@ Panel {
   readonly property bool quotaUnavailable: !!service && service.accountUsageEnabled
     && !service.accountUsage && service.accountUsageFailed
 
+  // ------------------------------------------------------------- controls
+
+  // The codex target block of the snapshot — everything the mode switches
+  // and provider toggles reflect. Empty object until the first read lands.
+  readonly property var codexTarget: {
+    var targets = service && service.snapshot && service.snapshot.targets
+      ? service.snapshot.targets : null
+    return targets && targets.codex ? targets.codex : {}
+  }
+  readonly property bool loginFree: root.codexTarget.loginFree === true
+  readonly property bool signedRouting: root.codexTarget.signedRouting === true
+  readonly property var enabledProviderIds: Array.isArray(root.codexTarget.enabledProviders)
+    ? root.codexTarget.enabledProviders : []
+
+  function providerIsEnabled(id) {
+    return root.enabledProviderIds.indexOf(String(id)) >= 0
+  }
+
+  // Every catalog provider from provider_setup, configured ones first so the
+  // rows that can actually be flipped sit at the top; alphabetical inside
+  // each group. Enabled state comes from the snapshot's enabledProviders,
+  // not from the setup payload.
+  readonly property var setupProviders: {
+    var setup = service ? service.providerSetup : null
+    var list = setup && Array.isArray(setup.providers) ? setup.providers : []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p || String(p.id || "") === "") continue
+      out.push({
+        id: String(p.id),
+        name: String(p.displayName || p.id),
+        kind: String(p.kind || "api"),
+        configured: p.configured === true,
+        action: String(p.action || ""),
+        credentialLabel: String(p.credentialLabel || ""),
+        planNote: String(p.planNote || "")
+      })
+    }
+    out.sort(function(a, b) {
+      if (a.configured !== b.configured) return a.configured ? -1 : 1
+      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
+    })
+    return out
+  }
+
+  function providerKindLabel(p) {
+    if (!p) return ""
+    if (p.kind === "oauth") return "OAuth sign-in"
+    if (p.kind === "anonymous") return "No API key"
+    if (p.kind === "per-model") return "Per-model endpoints"
+    return p.credentialLabel !== "" ? p.credentialLabel : "API key"
+  }
+
+  // Label for the affordance on unconfigured rows. Credentials are
+  // deliberately never typed into the plugin — every one of these opens the
+  // router's own web panel instead (PLAN.md §4).
+  function providerCta(p) {
+    if (!p || p.configured || p.kind === "anonymous") return ""
+    if (p.kind === "oauth") return "Sign in"
+    if (p.action === "install") return "Set up"
+    return "Add key"
+  }
+
+  // True while nothing user-facing should accept clicks: the router is
+  // unreachable or a mutation is already running. Service start is the one
+  // action exempt by design (see runAction).
+  readonly property bool actionsLocked: !service || !service.online || service.mutationRunning
+
+  // Which section owns the running/last-failed action, so busy and error
+  // notices render next to the control that started them rather than in a
+  // far corner of a scrolling column.
+  property string actionDomain: ""
+
+  function runAction(domain, label, args) {
+    if (!root.service || root.service.mutationRunning) return
+    // Offline, only service commands make sense — starting it above all.
+    if (!root.service.online && args[0] !== "service") return
+    root.actionDomain = domain
+    root.service.runControl(label, args, function(error) {
+      if (error === null) root.actionDomain = ""
+    })
+  }
+
+  function toggleProvider(p) {
+    if (!p || !p.configured) return
+    var enabling = !root.providerIsEnabled(p.id)
+    root.runAction("providers",
+      (enabling ? "Enabling " : "Disabling ") + p.name,
+      ["set-apply", p.id, enabling ? "on" : "off", "--targets", "codex", "--activate"])
+  }
+
+  // Busy line while this domain's mutation runs, its error afterwards;
+  // empty when the domain is uninvolved.
+  function domainNotice(domain) {
+    if (!root.service || root.actionDomain !== domain) return ""
+    if (root.service.mutationRunning) return root.service.mutationLabel + "…"
+    return root.service.mutationError
+  }
+
   // ---------------------------------------------------------------- misc
 
   function formatElapsed(ms) {
@@ -324,6 +425,55 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+            }
+          }
+
+          // ---------- Mode switches ----------
+          Column {
+            id: modesSection
+            // The toggles mirror snapshot state; without a first read they
+            // would show "off" as if it were the truth.
+            visible: !!root.service && root.service.online && root.service.hasCallerSecret
+              && !!root.service.snapshot
+            width: parent.width
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "MODES"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Login-free mode"
+              description: "Route Codex without a ChatGPT sign-in."
+              checked: root.loginFree
+              foreground: root.foreground
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              opacity: root.actionsLocked ? 0.55 : 1
+              onClicked: root.runAction("modes", "Switching login-free mode",
+                ["auth-mode", root.loginFree ? "off" : "on"])
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Signed routing"
+              description: "Sign routed requests so upstream responses verify."
+              checked: root.signedRouting
+              foreground: root.foreground
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              opacity: root.actionsLocked ? 0.55 : 1
+              onClicked: root.runAction("modes", "Switching signed routing",
+                ["signed-routing", root.signedRouting ? "off" : "on"])
+            }
+
+            ActionNotice {
+              width: parent.width
+              domain: "modes"
             }
           }
 
@@ -639,6 +789,140 @@ Panel {
             }
           }
 
+          // ---------- Providers ----------
+          PanelSeparator {
+            visible: providersSection.visible
+            foreground: root.foreground
+          }
+
+          Column {
+            id: providersSection
+            visible: !!root.service && root.service.online && root.service.hasCallerSecret
+              && root.setupProviders.length > 0
+            width: parent.width
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "PROVIDERS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.setupProviders
+
+              ProviderRow {
+                required property var modelData
+                width: parent.width
+                provider: modelData
+              }
+            }
+
+            ActionNotice {
+              width: parent.width
+              domain: "providers"
+            }
+          }
+
+          // ---------- Maintenance ----------
+          PanelSeparator {
+            visible: maintenanceSection.visible
+            foreground: root.foreground
+          }
+
+          Column {
+            id: maintenanceSection
+            visible: !!root.service
+            width: parent.width
+            spacing: Style.spacing.md
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "MAINTENANCE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            // Offline, starting the service is the one action that makes
+            // sense — everything else needs a router to talk to.
+            Button {
+              visible: !root.service || !root.service.online
+              width: parent.width
+              text: "Start service"
+              enabled: !!root.service && !root.service.mutationRunning
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.runAction("maintenance", "Starting service", ["service", "start"])
+            }
+
+            Row {
+              visible: !!root.service && root.service.online
+              width: parent.width
+              spacing: Style.spacing.sm
+
+              readonly property real cellWidth: (width - spacing * 2) / 3
+
+              Button {
+                width: parent.cellWidth
+                text: "Restart"
+                tooltipText: "Restart the codex-router service"
+                enabled: !root.actionsLocked
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.runAction("maintenance", "Restarting service",
+                  ["service", "restart"])
+              }
+
+              Button {
+                width: parent.cellWidth
+                text: "Update"
+                tooltipText: "Run the router's maintenance task"
+                enabled: !root.actionsLocked
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.runAction("maintenance", "Running maintenance", ["maintenance"])
+              }
+
+              Button {
+                width: parent.cellWidth
+                text: "Fix"
+                tooltipText: "Run doctor --fix to repair the installation"
+                enabled: !root.actionsLocked
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.runAction("maintenance", "Running doctor fix",
+                  ["doctor", "--fix", "--json"])
+              }
+            }
+
+            Button {
+              visible: !!root.service && root.service.online
+              width: parent.width
+              text: "Open web panel"
+              tooltipText: "Opens the router's browser panel — sign-ins and API keys live there"
+              enabled: !!root.service && !root.service.mutationRunning
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: if (root.service) root.service.openWebPanel()
+            }
+
+            ActionNotice {
+              width: parent.width
+              domain: "maintenance"
+            }
+          }
+
           // ---------- Footer: manual refresh + freshness stamp ----------
           PanelSeparator { foreground: root.foreground }
 
@@ -848,6 +1132,158 @@ Panel {
     PanelToolTip {
       visible: rowHover.containsMouse
       text: modelRow.tooltip
+      fontFamily: root.fontFamily
+    }
+  }
+
+  // Busy/error line for one controls section. Dim while the mutation runs,
+  // urgent once it has failed; hidden otherwise.
+  component ActionNotice: Text {
+    id: actionNotice
+    property string domain: ""
+
+    visible: root.domainNotice(actionNotice.domain) !== ""
+    text: root.domainNotice(actionNotice.domain)
+    color: root.service && root.service.mutationRunning ? root.dim : root.urgent
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.WordWrap
+  }
+
+  // One provider from the setup catalog: configured pill + name, credential
+  // detail underneath, and on the right either the enable switch (configured)
+  // or the affordance that hands off to the web panel.
+  component ProviderRow: Item {
+    id: prow
+
+    property var provider: null
+
+    readonly property bool configured: !!provider && provider.configured === true
+    readonly property string cta: provider ? root.providerCta(provider) : ""
+    readonly property string detail: {
+      if (!provider) return ""
+      var kind = root.providerKindLabel(provider)
+      var note = String(provider.planNote || "")
+      return note !== "" ? kind + " · " + note : kind
+    }
+
+    implicitHeight: Math.max(provText.implicitHeight, provControl.implicitHeight)
+
+    Column {
+      id: provText
+      anchors.left: parent.left
+      anchors.right: provControl.left
+      anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Item {
+        width: parent.width
+        implicitHeight: Math.max(provPill.height, provName.implicitHeight)
+
+        Rectangle {
+          id: provPill
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          radius: height / 2
+          width: provPillText.implicitWidth + Style.space(10)
+          height: Style.space(16)
+          color: prow.configured ? root.alpha(root.foreground, 0.14)
+            : root.alpha(root.foreground, 0.05)
+
+          Text {
+            id: provPillText
+            anchors.centerIn: parent
+            text: prow.configured ? "CONFIGURED" : "NOT SET UP"
+            color: prow.configured ? root.foreground : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        Text {
+          id: provName
+          text: prow.provider ? String(prow.provider.name) : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+          anchors.left: provPill.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+        }
+      }
+
+      Text {
+        width: parent.width
+        text: prow.detail
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+
+    Item {
+      id: provControl
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+
+      width: Math.max(provSwitch.implicitWidth, provCta.implicitWidth, provNone.implicitWidth)
+      height: Math.max(provSwitch.implicitHeight, provCta.implicitHeight, provNone.implicitHeight)
+
+      ToggleSwitch {
+        id: provSwitch
+        visible: prow.configured
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        checked: prow.provider ? root.providerIsEnabled(prow.provider.id) : false
+        interactive: !root.actionsLocked
+        busy: !!root.service && root.service.mutationRunning
+        foreground: root.foreground
+        onToggled: if (prow.provider) root.toggleProvider(prow.provider)
+      }
+
+      Button {
+        id: provCta
+        visible: !prow.configured && prow.cta !== ""
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: prow.cta
+        tooltipText: "Opens the router's web panel"
+        enabled: !root.actionsLocked
+        bordered: true
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        fontSize: Style.font.caption
+        onClicked: if (root.service) root.service.openWebPanel()
+      }
+
+      Text {
+        id: provNone
+        visible: !prow.configured && prow.cta === ""
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: "No key needed"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    MouseArea {
+      id: prowHover
+      anchors.fill: parent
+      hoverEnabled: true
+      acceptedButtons: Qt.NoButton
+    }
+
+    PanelToolTip {
+      visible: prowHover.containsMouse && prow.provider !== null
+        && String(prow.provider.planNote || "") !== ""
+      text: prow.provider ? String(prow.provider.name) + " · " + String(prow.provider.planNote) : ""
       fontFamily: root.fontFamily
     }
   }

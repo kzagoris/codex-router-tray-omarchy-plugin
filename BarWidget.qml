@@ -29,6 +29,7 @@ BarWidget {
     portOverride: root.routerPortSetting
     dataIntervalSec: root.dataIntervalSec
     stateDirOverride: root.stateDirSetting
+    sourceRootOverride: root.sourceRootSetting
     accountUsageEnabled: root.accountUsageWanted
   }
 
@@ -65,6 +66,8 @@ BarWidget {
   }
 
   readonly property string stateDirSetting: expandPath(settings ? settings["stateDir"] : "")
+
+  readonly property string sourceRootSetting: expandPath(settings ? settings["sourceRoot"] : "")
 
   readonly property bool accountUsageWanted: setting("accountUsage", "Off") === "On"
 
@@ -213,7 +216,12 @@ BarWidget {
     fixedHeight: root.vertical ? Style.bar.iconSlot : -1
 
     onPressed: function(b) {
-      if (b === Qt.MiddleButton) return // web-panel opener arrives with the controls (phase 4)
+      // Middle click is the escape hatch for heavy flows: the router's own
+      // browser panel at its capability URL (bin/panel equivalent).
+      if (b === Qt.MiddleButton) {
+        router.openWebPanel()
+        return
+      }
       root.togglePanel()
     }
 
