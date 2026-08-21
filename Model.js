@@ -131,9 +131,9 @@ function buildQuotaCards(sources) {
   var seen = {};
 
   function add(providerId, providerName, metric, source) {
-    var window = quotaWindow(metric);
-    if (!window) return;
-    var key = providerId + ":" + window.key;
+    var win = quotaWindow(metric);
+    if (!win) return;
+    var key = providerId + ":" + win.key;
     if (seen[key]) return;
     seen[key] = true;
     var resetAt = Number(metric.resetsAt !== undefined ? metric.resetsAt : metric.resetAt);
@@ -142,8 +142,8 @@ function buildQuotaCards(sources) {
       providerId: providerId,
       providerName: providerName,
       source: source,
-      window: window.key,
-      label: window.label,
+      window: win.key,
+      label: win.label,
       usedPercent: metricPercent(metric),
       remainingPercent: metricRemainingPercent(metric),
       resetAt: isFinite(resetAt) && resetAt > 0 ? resetAt : null
@@ -184,12 +184,39 @@ function formatReset(unixSeconds, now) {
     + " " + date.getDate() + " at " + time;
 }
 
+// The tray's allowance surfaces answer the operator's question directly:
+// how long until this window turns over. Returns "" when unusable so
+// callers can fall back to formatReset's absolute form.
+function formatResetIn(unixSeconds, now) {
+  var seconds = Number(unixSeconds);
+  if (!isFinite(seconds) || seconds <= 0) return "";
+  var remainingMs = seconds * 1000 - now.getTime();
+  if (!(remainingMs > 0)) return "Resets now";
+  var totalMinutes = Math.floor(remainingMs / 60000);
+  var days = Math.floor(totalMinutes / (24 * 60));
+  var hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  var minutes = totalMinutes % 60;
+  if (days > 0) return "Resets in " + days + "d " + hours + "h";
+  if (hours > 0) return "Resets in " + hours + "h " + minutes + "m";
+  return "Resets in " + Math.max(1, minutes) + "m";
+}
+
+// Bucket rows are keyed by their startDate string everywhere; one lookup
+// instead of a fresh scan at each call site.
+function bucketFor(buckets, dateKey) {
+  var list = Array.isArray(buckets) ? buckets : [];
+  for (var i = 0; i < list.length; i++)
+    if (String(list[i].startDate) === dateKey) return list[i];
+  return null;
+}
+
+function bucketValue(buckets, dateKey, field) {
+  var bucket = bucketFor(buckets, dateKey);
+  return bucket ? (Number(bucket[field]) || 0) : 0;
+}
+
 function todayTokens(source, today) {
-  var key = localDateKey(today);
-  var buckets = source && Array.isArray(source.buckets) ? source.buckets : [];
-  for (var i = 0; i < buckets.length; i++)
-    if (String(buckets[i].startDate) === key) return Number(buckets[i].tokens) || 0;
-  return 0;
+  return bucketValue(source && source.buckets, localDateKey(today), "tokens");
 }
 
 function sevenDayTokens(source, today) {

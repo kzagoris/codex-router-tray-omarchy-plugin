@@ -39,7 +39,7 @@ Item {
   // the router side for this one — only the documented default path.
   readonly property string stateDir: {
     if (root.stateDirOverride !== "") return root.stateDirOverride
-    var home = Quickshell.env("HOME")
+    var home = Quickshell.env("HOME") || ""
     return home !== "" ? home + "/.codex/codex-router" : ""
   }
   readonly property string callerSecretPath: root.stateDir === "" ? "" : root.stateDir + "/caller-secret"
@@ -59,11 +59,13 @@ Item {
   property var providerSetup: null
   property var providerUsage: null
 
-  // account_usage rides separately: it is a slow upstream call that times
-  // out now and then (PLAN.md §2.2), so its failure must not read as a
-  // general data failure.
+  // account_usage rides on its own request and its own loading flag: it is
+  // a slow upstream call that times out now and then (PLAN.md §2.2), so its
+  // failure must not read as a general data failure nor hold any other
+  // section's refresh hostage.
   property var accountUsage: null
   property bool accountUsageFailed: false
+  property bool accountUsageLoading: false
 
   // First error from the shared data commands, message truncated to 500
   // chars like the tray does. Empty = last round had no shared failure;
@@ -144,21 +146,17 @@ Item {
     // Skip, don't abort: a response that is merely slower than the interval
     // is still a healthy answer, and dropping it would report "offline"
     // against a router that is responding. A wedged connection is bounded by
-    // the XHR timeout below instead.
+    // the watchdog below instead of XHR.timeout, which QML's XMLHttpRequest
+    // does not honor.
     if (_inFlight) return
 
     var xhr = new XMLHttpRequest()
+    var entry = _track(xhr, Math.max(2000, Math.max(2, root.healthIntervalSec) * 1000 - 250))
     _inFlight = xhr
-    // Bound the wait inside the poll cadence so a router that accepts but
-    // never answers cannot leave the dot green on stale data forever.
-    xhr.timeout = Math.max(1500, Math.max(2, root.healthIntervalSec) * 1000 - 250)
-    xhr.ontimeout = function() {
-      if (_inFlight === xhr) _inFlight = null
-      applyHealth(0, "")
-    }
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       if (_inFlight === xhr) _inFlight = null
+      _untrack(entry)
       applyHealth(xhr.status, xhr.responseText)
     }
     xhr.open("GET", "http://127.0.0.1:" + root.port + "/health")
@@ -185,10 +183,60 @@ Item {
     }
   }
 
+  // ---------------------------------------------------- request watchdog
+  //
+  // QML's XMLHttpRequest ignores the timeout/ontimeout properties, so a
+  // router that accepts but never answers would pin a request open forever.
+  // Tracked requests carry an absolute deadline; one repeating Timer scans
+  // them once a second and aborts the expired ones.
+
+  // Var-property arrays only notify on reassignment, so every mutation
+  // rebuilds the array — the watchdog Timer's running binding reads the
+  // length and would otherwise never see pushes.
+  property var _tracked: []
+  readonly property int _trackedCount: _tracked.length
+
+  function _track(request, budgetMs) {
+    var entry = { request: request, deadline: Date.now() + budgetMs, timedOut: false }
+    _tracked = _tracked.concat([entry])
+    return entry
+  }
+
+  function _untrack(entry) {
+    var index = _tracked.indexOf(entry)
+    if (index < 0) return
+    var copy = _tracked.slice()
+    copy.splice(index, 1)
+    _tracked = copy
+  }
+
+  Timer {
+    interval: 1000
+    running: root._trackedCount > 0
+    repeat: true
+    triggeredOnStart: false
+    onTriggered: root._abortExpired()
+  }
+
+  function _abortExpired() {
+    var now = Date.now()
+    for (var i = _tracked.length - 1; i >= 0; i--) {
+      if (_tracked[i].deadline > now) continue
+      var entry = _tracked[i]
+      var request = entry.request
+      entry.timedOut = true
+      _untrack(entry)
+      try { request.abort() } catch (e) { /* already gone */ }
+    }
+  }
+
   // ------------------------------------------------- authenticated invoke
   //
   // POST <base>/_codex-router/<secret>/panel/invoke with {"command", "args"};
   // 200 answers {"value": ...}, failures carry {"error": {"message": ...}}.
+  //
+  // Callback contract: onDone(value, error) with error === null on success,
+  // a human-readable string otherwise.
 
   function invoke(command, args, onDone) {
     if (!root.hasCallerSecret) {
@@ -202,30 +250,44 @@ Item {
     var request = new XMLHttpRequest()
     // account_usage proxies a slow upstream call; everything else answers
     // locally and quickly.
-    request.timeout = command === "account_usage" ? 30000 : 15000
+    var entry = _track(request, command === "account_usage" ? 30000 : 15000)
+    var settled = false
+
     request.onreadystatechange = function() {
       if (request.readyState !== XMLHttpRequest.DONE) return
+      if (settled) return
+      settled = true
+      _untrack(entry)
+
+      if (entry.timedOut) {
+        if (onDone) onDone(null, "Router did not answer in time.")
+        return
+      }
+
       if (request.status === 200) {
         var value = null
-        var parseError = ""
         try {
           var payload = JSON.parse(String(request.responseText))
           value = payload && payload.value !== undefined ? payload.value : null
         } catch (e) {
-          parseError = "Router sent an unreadable response."
+          if (onDone) onDone(null, "Router sent an unreadable response.")
+          return
         }
-        if (onDone) onDone(value, parseError)
+        if (onDone) onDone(value, null)
         return
       }
 
-      // 401/403 usually mean the key rotated on disk: re-read once and
-      // replay. Concurrent failures join the same reload — the batch of
-      // three data commands can all come back denied together.
-      if ((request.status === 401 || request.status === 403)
-          && allowAuthRetry && !root._authReloading) {
+      // 401 means the key we sent is stale (a wrong key answers 401; 403
+      // is the allowlist-deny shape). Park and replay after re-reading the
+      // file once. Concurrent denials park too — the batch of three data
+      // commands can all come back denied together — but only the first
+      // triggers the reload.
+      if (request.status === 401 && allowAuthRetry) {
         root._authRetries.push({ command: command, args: args, onDone: onDone })
-        root._authReloading = true
-        secretFile.reload()
+        if (!root._authReloading) {
+          root._authReloading = true
+          secretFile.reload()
+        }
         return
       }
 
@@ -275,37 +337,36 @@ Item {
   // ------------------------------------------------------------ data read
 
   // Refreshes snapshot/provider_setup/provider_usage (+account_usage when
-  // enabled). Called on panel open, on the data interval while open, and —
-  // from phase 4 — after every mutation.
+  // enabled, independently). Called on panel open, on the data interval
+  // while open, and — from phase 4 — after every mutation.
   function refreshData() {
     if (!root.online || !root.hasCallerSecret || root.dataLoading) return
 
     root.dataLoading = true
-    var rounds = [["control_snapshot", root, "snapshot"],
-                  ["provider_setup", root, "providerSetup"],
-                  ["provider_usage", root, "providerUsage"]]
-    if (root.accountUsageEnabled)
-      rounds.push(["account_usage", root, "accountUsage"])
+    var rounds = [{ command: "control_snapshot", prop: "snapshot" },
+                  { command: "provider_setup", prop: "providerSetup" },
+                  { command: "provider_usage", prop: "providerUsage" }]
 
     var pending = rounds.length
     var gotFresh = false
     var firstSharedError = ""
+    var roundOpen = true
 
     function receive(round, value, error) {
-      var name = round[0]
       if (error === null) {
         gotFresh = true
-        if (name === "account_usage") root.accountUsageFailed = false
-        else root[round[2]] = value
-      } else if (name === "account_usage") {
-        // Fails independently by design; its section says so locally.
-        root.accountUsageFailed = true
+        root[round.prop] = value
       } else if (firstSharedError === "") {
         firstSharedError = error
       }
 
+      // A retry parked by a mid-round rotation can land after the round
+      // closed: its fresh payload still lands above, but it must not touch
+      // bookkeeping that belongs to whichever round is now current.
+      if (!roundOpen) return
       pending--
       if (pending > 0) return
+      roundOpen = false
       root.dataLoading = false
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = Date.now()
@@ -316,7 +377,23 @@ Item {
     }
 
     for (var i = 0; i < rounds.length; i++)
-      invoke(rounds[i][0], {}, receiverFor(rounds[i]))
+      invoke(rounds[i].command, {}, receiverFor(rounds[i]))
+
+    refreshAccountUsage()
+  }
+
+  // Fully independent: own flag, no share of dataLoading/pending, so a hung
+  // quota call never disables Refresh or freezes the footer (PLAN.md §5).
+  function refreshAccountUsage() {
+    if (!root.accountUsageEnabled || root.accountUsageLoading) return
+    if (!root.online || !root.hasCallerSecret) return
+
+    root.accountUsageLoading = true
+    invoke("account_usage", {}, function(value, error) {
+      root.accountUsageLoading = false
+      root.accountUsageFailed = error !== null
+      if (error === null) root.accountUsage = value
+    })
   }
 
   // --------------------------------------------------------------- timers
@@ -338,6 +415,9 @@ Item {
     interval: Math.max(15, root.dataIntervalSec) * 1000
     running: root.panelOpen && root.online && root.hasCallerSecret
     repeat: true
-    onTriggered: root.refreshData()
+    onTriggered: {
+      root.refreshData()
+      root.refreshAccountUsage()
+    }
   }
 }

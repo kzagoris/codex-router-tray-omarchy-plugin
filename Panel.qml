@@ -122,7 +122,7 @@ Panel {
     if (state === "generating") return "GENERATING · " + service.activeCount + " ACTIVE"
     if (state === "error") {
       var names = service.degradedNames.join(", ")
-      return (names !== "" ? "DEGRADED · " + names : "ERROR").toUpperCase()
+      return (names !== "" ? "DEGRADED: " + names : "ERROR").toUpperCase()
     }
     var version = service.version
     return version !== "" ? "RUNNING · V" + version.toUpperCase() : "RUNNING"
@@ -181,26 +181,25 @@ Panel {
 
   onTrafficIndexChanged: if (panelFlick) panelFlick.contentY = 0
 
+  // The local calendar day, as a string. daySeries and the Today row key
+  // off this rather than raw nowMs: a per-second Date would rebuild the
+  // series (and with it every DayRow) each tick, dropping hover states and
+  // width animations for nothing — the value only moves at midnight.
+  readonly property string todayKey: Model.localDateKey(new Date(nowMs))
+
   readonly property var daySeries: selectedProvider
-    ? Model.dailySeries(selectedProvider.buckets, 7, new Date(nowMs))
+    ? Model.dailySeries(selectedProvider.buckets, 7, new Date(todayKey + "T12:00:00"))
     : []
 
   function dayRequests(dateKey) {
     if (!selectedProvider) return 0
-    var buckets = selectedProvider.buckets
-    for (var i = 0; i < buckets.length; i++)
-      if (String(buckets[i].startDate) === dateKey) return Number(buckets[i].requests) || 0
-    return 0
+    return Model.bucketValue(selectedProvider.buckets, dateKey, "requests")
   }
 
   readonly property real dayPeak: {
     var peak = 1
     for (var i = 0; i < daySeries.length; i++) peak = Math.max(peak, daySeries[i].tokens)
     return peak
-  }
-
-  function todayDate() {
-    return Model.localDateKey(new Date(nowMs))
   }
 
   function dayTooltip(day) {
@@ -553,8 +552,14 @@ Panel {
                   Text {
                     visible: text !== ""
                     width: parent.width
-                    text: quotaRow.modelData.resetAt
-                      ? Model.formatReset(quotaRow.modelData.resetAt, new Date(root.nowMs)) : ""
+                    // §4 asks for a live countdown; keep the absolute time
+                    // as the fallback when no usable reset stamp arrived.
+                    text: {
+                      if (!quotaRow.modelData.resetAt) return ""
+                      var now = new Date(root.nowMs)
+                      return Model.formatResetIn(quotaRow.modelData.resetAt, now)
+                        || Model.formatReset(quotaRow.modelData.resetAt, now)
+                    }
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -596,7 +601,7 @@ Panel {
                   ratio: modelData.tokens / root.dayPeak
                   // By date, not by position: a payload generated before
                   // midnight must not light yesterday as "Today".
-                  today: String(modelData.key) === root.todayDate()
+                  today: String(modelData.key) === root.todayKey
                 }
               }
             }
