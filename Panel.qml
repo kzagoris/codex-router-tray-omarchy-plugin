@@ -21,9 +21,7 @@ Panel {
   // nested panel; everything the bar identifies a panel by has to be that
   // widget (see clock).
   property var hostWidget: null
-  readonly property var barIdentity: hostWidget || root
-
-  // ------------------------------------------------------------- palette
+  readonly property var barIdentity: hostWidget || root  // ------------------------------------------------------------- palette
   //
   // Fills are always alpha steps of foreground so the panel is theme-proof;
   // alarm color only ever comes from `urgent`.
@@ -43,10 +41,18 @@ Panel {
     // RouterService refresh arrives with phase 3.
   }
 
+  // Tab-style walk to the neighboring popout, keyed by the bar widget —
+  // PanelKeyCatcher's onTabRequested routes here (see clock).
+  function switchPanel(direction) {
+    if (root.bar && typeof root.bar.switchPanelFrom === "function")
+      return root.bar.switchPanelFrom(root.barIdentity, direction)
+    return false
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
-    owner: root
+    owner: root.barIdentity
     bar: root.bar
     open: root.opened
     contentWidth: panel.fittedContentWidth(Style.space(380))

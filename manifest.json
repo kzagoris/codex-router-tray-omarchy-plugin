@@ -18,7 +18,7 @@
     "defaults": {
       "healthIntervalSec": 4,
       "dataIntervalSec": 30,
-      "showProviderText": true,
+      "showProviderText": "Icon only",
       "port": 4202,
       "stateDir": "",
       "sourceRoot": "",
