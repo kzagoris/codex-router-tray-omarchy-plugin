@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "kzagoris.codex-router-tray",
+  "name": "Codex Router Tray",
+  "version": "0.1.0",
+  "author": "kzagoris",
+  "license": "MIT",
+  "description": "Codex Router status, usage, providers, and controls in a native bar panel.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Codex Router",
+    "description": "Router health, live activity, provider usage, and controls.",
+    "category": "AI",
+    "aliases": ["codex-router", "model-router", "router"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "healthIntervalSec": 4,
+      "dataIntervalSec": 30,
+      "showProviderText": true,
+      "port": 4202,
+      "stateDir": "",
+      "sourceRoot": "",
+      "accountUsage": false
+    },
+    "schema": [
+      { "key": "healthIntervalSec", "type": "integer", "label": "Health poll interval (seconds)", "min": 2, "max": 60, "step": 1, "defaultValue": 4 },
+      { "key": "dataIntervalSec", "type": "integer", "label": "Usage refresh interval (seconds)", "min": 15, "max": 600, "step": 5, "defaultValue": 30 },
+      { "key": "showProviderText", "type": "enum", "label": "Bar label", "options": ["Icon only", "Provider name"], "defaultValue": "Icon only" },
+      { "key": "port", "type": "integer", "label": "Router port", "min": 1024, "max": 65535, "defaultValue": 4202 },
+      { "key": "stateDir", "type": "path", "label": "State directory (caller secret)", "defaultValue": "", "description": "Empty = ~/.codex/codex-router" },
+      { "key": "sourceRoot", "type": "path", "label": "Router checkout (control CLI)", "defaultValue": "", "description": "Empty = ~/.local/share/codex-router" },
+      { "key": "accountUsage", "type": "enum", "label": "ChatGPT account usage", "options": ["Off", "On"], "defaultValue": "Off", "description": "Slow upstream call; adds ChatGPT quota cards when On." }
+    ]
+  }
+}
