@@ -94,7 +94,6 @@ BarWidget {
   // state word, so a degraded-but-serving router pulses red instead of
   // sitting frozen.
   readonly property bool pulsing: router.activeCount > 0
-  onPulsingChanged: if (!pulsing) statusDot.opacity = 1
 
   // ------------------------------------------------------------- label
 
@@ -124,6 +123,14 @@ BarWidget {
   onTooltipTextLiveChanged: {
     if (button.tooltipHovered && root.bar) root.bar.showTooltip(button, tooltipTextLive)
   }
+
+  // ------------------------------------------------------------ vertical
+
+  // Vertical bars stack one icon-slot per line (clock pattern): the mark,
+  // plus the provider id when the bar-label setting asks for one. The id
+  // line elides to the bar's fixed thickness.
+  readonly property bool verticalNameLine: root.vertical && providerLabelWanted
+    && router.providerName !== ""
 
   // ---- Panel popup. Shape contract for shell.summon/hide/toggle routing:
   //      Bar.findPanelWidget requires open/close/opened on the bar-widget
@@ -213,7 +220,9 @@ BarWidget {
     fixedWidth: root.vertical ? -1
       : root.labelVisible ? contentRow.implicitWidth + scaledHorizontalMargin * 2
       : Style.bar.iconSlot
-    fixedHeight: root.vertical ? Style.bar.iconSlot : -1
+    // Vertical bars stack one icon-slot per painted line (clock pattern).
+    fixedHeight: root.vertical
+      ? (root.verticalNameLine ? 2 : 1) * Style.bar.iconSlot : -1
 
     onPressed: function(b) {
       // Middle click is the escape hatch for heavy flows: the router's own
@@ -227,46 +236,12 @@ BarWidget {
 
     Row {
       id: contentRow
+      visible: !root.vertical
       anchors.centerIn: parent
       spacing: Style.space(6)
 
-      Item {
-        id: markSlot
-        width: glyph.implicitWidth
-        height: glyph.implicitHeight
-
-        Text {
-          id: glyph
-          anchors.centerIn: parent
-          text: root.routerGlyph
-          color: button.foreground
-          font.family: button.fontFamily
-          font.pixelSize: Style.bar.iconFont
-          renderType: Text.NativeRendering
-        }
-
-        // Status dot on the glyph's lower-right edge.
-        Rectangle {
-          id: statusDot
-          width: Style.space(7)
-          height: width
-          radius: width / 2
-          color: root.dotColor
-          border.color: root.bar ? root.bar.background : Color.background
-          border.width: 1
-          anchors.horizontalCenter: glyph.horizontalCenter
-          anchors.horizontalCenterOffset: Math.round(glyph.implicitWidth * 0.30)
-          anchors.verticalCenter: glyph.verticalCenter
-          anchors.verticalCenterOffset: Math.round(glyph.implicitHeight * 0.22)
-
-          SequentialAnimation on opacity {
-            running: root.pulsing
-            loops: Animation.Infinite
-
-            NumberAnimation { to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 1; duration: 650; easing.type: Easing.InOutQuad }
-          }
-        }
+      MarkSlot {
+        pulsing: root.pulsing
       }
 
       Text {
@@ -276,6 +251,78 @@ BarWidget {
         color: button.foreground
         font.family: button.fontFamily
         font.pixelSize: Style.font.caption
+      }
+    }
+
+    // Vertical: the same mark in its own slot, with the provider id stacked
+    // underneath when the label setting asks for one (clock's line stack).
+    Column {
+      visible: root.vertical
+      anchors.fill: parent
+
+      MarkSlot {
+        width: parent.width
+        height: Style.bar.iconSlot
+        pulsing: root.pulsing
+      }
+
+      Text {
+        visible: root.verticalNameLine
+        width: parent.width
+        height: Style.bar.iconSlot
+        text: router.providerName
+        color: button.foreground
+        font.family: button.fontFamily
+        font.pixelSize: Math.max(Style.space(9), Math.round(button.fontSize * 0.55))
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+      }
+    }
+  }
+
+  // The router mark with its status dot, shared by both bar orientations.
+  // The dot resets to full opacity when the pulse stops — the animation
+  // leaves the last frame behind otherwise.
+  component MarkSlot: Item {
+    id: markSlot
+    property bool pulsing: false
+
+    implicitWidth: glyph.implicitWidth
+    implicitHeight: glyph.implicitHeight
+
+    onPulsingChanged: if (!pulsing) statusDot.opacity = 1
+
+    Text {
+      id: glyph
+      anchors.centerIn: parent
+      text: root.routerGlyph
+      color: button.foreground
+      font.family: button.fontFamily
+      font.pixelSize: Style.bar.iconFont
+      renderType: Text.NativeRendering
+    }
+
+    // Status dot on the glyph's lower-right edge.
+    Rectangle {
+      id: statusDot
+      width: Style.space(7)
+      height: width
+      radius: width / 2
+      color: root.dotColor
+      border.color: root.bar ? root.bar.background : Color.background
+      border.width: 1
+      anchors.horizontalCenter: glyph.horizontalCenter
+      anchors.horizontalCenterOffset: Math.round(glyph.implicitWidth * 0.30)
+      anchors.verticalCenter: glyph.verticalCenter
+      anchors.verticalCenterOffset: Math.round(glyph.implicitHeight * 0.22)
+
+      SequentialAnimation on opacity {
+        running: markSlot.pulsing
+        loops: Animation.Infinite
+
+        NumberAnimation { to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
+        NumberAnimation { to: 1; duration: 650; easing.type: Easing.InOutQuad }
       }
     }
   }
