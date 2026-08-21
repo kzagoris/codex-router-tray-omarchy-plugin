@@ -58,16 +58,19 @@ plugin; the web panel is the router's sanctioned surface for secrets).
 
 ## Install
 
-Copy this plugin folder into your plugins directory and enable it:
+Clone this repo into your plugins directory and enable it:
 
 ```sh
-cp -R plugin ~/.config/omarchy/plugins/kzagoris.codex-router-tray
+git clone https://github.com/kzagoris/codex-router-tray-omarchy-plugin.git \
+  ~/.config/omarchy/plugins/kzagoris.codex-router-tray
 omarchy plugin enable kzagoris.codex-router-tray right
 ```
 
+Update later with `git -C ~/.config/omarchy/plugins/kzagoris.codex-router-tray pull`,
+then `omarchy restart shell`.
+
 The folder must be a real copy — plugin folders may not contain symlinks
-(`omarchy plugin validate` rejects them, and so does the marketplace). While
-developing from a checkout, `./sync.sh` re-copies `plugin/` on every change.
+(`omarchy plugin validate` rejects them, and so does the marketplace).
 
 ## Settings
 
