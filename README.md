@@ -58,15 +58,16 @@ plugin; the web panel is the router's sanctioned surface for secrets).
 
 ## Install
 
-Copy/symlink this plugin folder into your plugins directory and enable it:
+Copy this plugin folder into your plugins directory and enable it:
 
 ```sh
-ln -s "$(pwd)/plugin" ~/.config/omarchy/plugins/kzagoris.codex-router-tray
+cp -R plugin ~/.config/omarchy/plugins/kzagoris.codex-router-tray
 omarchy plugin enable kzagoris.codex-router-tray right
 ```
 
-(For a production install without a symlink, copy the folder instead — the
-marketplace disallows symlinks.)
+The folder must be a real copy — plugin folders may not contain symlinks
+(`omarchy plugin validate` rejects them, and so does the marketplace). While
+developing from a checkout, `./sync.sh` re-copies `plugin/` on every change.
 
 ## Settings
 
@@ -93,7 +94,7 @@ layout entry:
 omarchy-shell shell summon kzagoris.codex-router-tray '{}'   # open
 omarchy-shell shell hide kzagoris.codex-router-tray          # close
 omarchy-shell shell toggle kzagoris.codex-router-tray
-omarchy-shell shell refresh kzagoris.codex-router-tray
+omarchy-shell kzagoris.codex-router-tray refresh             # re-poll now
 ```
 
 With the panel focused, `R` refreshes, Escape closes, Tab switches panels.
@@ -120,7 +121,7 @@ All traffic is loopback-only. No credentials ever flow through the plugin.
 | Gray dot, "Router offline" | `systemctl --user start codex-router` |
 | "Caller key missing or unreadable" | `./bin/doctor --fix` in the router checkout |
 | Toggles/buttons error | Check Node is on PATH and `sourceRoot` points at the router checkout |
-| Widget missing from the gallery | `omarchy plugin list --json | jq 'select(.id=="kzagoris.codex-router-tray")'` |
+| Widget missing from the gallery | `omarchy plugin list --json \| jq '.[] \| select(.id=="kzagoris.codex-router-tray")'` |
 | QML errors in the journal | `qs log -p "$OMARCHY_PATH/shell" --tail 100` |
 
 ## Development

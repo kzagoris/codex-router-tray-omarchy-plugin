@@ -5,7 +5,10 @@
 //
 // chartGeometry() from the source file was dropped on purpose: the tray draws
 // an SVG sparkline from it, while this panel reads TOKENS BY DAY as DayRow
-// bars (PLAN.md §4), so nothing here consumes it.
+// bars (PLAN.md §4), so nothing here consumes it. todayTokens() and
+// sevenDayTokens() were dropped the same way at finalization: the panel gets
+// both figures straight off dailySeries()/bucketValue(), so the wrappers had
+// no caller left.
 //
 // Everything is defensive: router payload shapes are verified against
 // 0.4.0-beta.4 but every accessor tolerates absence.
@@ -213,18 +216,6 @@ function bucketFor(buckets, dateKey) {
 function bucketValue(buckets, dateKey, field) {
   var bucket = bucketFor(buckets, dateKey);
   return bucket ? (Number(bucket[field]) || 0) : 0;
-}
-
-function todayTokens(source, today) {
-  return bucketValue(source && source.buckets, localDateKey(today), "tokens");
-}
-
-function sevenDayTokens(source, today) {
-  var buckets = source && Array.isArray(source.buckets) ? source.buckets : [];
-  var series = dailySeries(buckets, 7, today);
-  var total = 0;
-  for (var i = 0; i < series.length; i++) total += series[i].tokens;
-  return total;
 }
 
 function pad2(number) {
