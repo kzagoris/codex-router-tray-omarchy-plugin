@@ -293,25 +293,34 @@ Panel {
   // action exempt by design (see runAction).
   readonly property bool actionsLocked: !service || !service.online || service.mutationRunning
 
+  // One guard for every section that needs live, authenticated data.
+  readonly property bool controlsReachable: !!service && service.online
+    && service.hasCallerSecret
+
   // Which section owns the running/last-failed action, so busy and error
   // notices render next to the control that started them rather than in a
   // far corner of a scrolling column.
   property string actionDomain: ""
+  // Which exact control started it, so its own button can swap to a busy
+  // label while the rest of the panel merely disables.
+  property string activeControlKey: ""
 
-  function runAction(domain, label, args) {
+  function runAction(domain, key, label, args) {
     if (!root.service || root.service.mutationRunning) return
     // Offline, only service commands make sense — starting it above all.
-    if (!root.service.online && args[0] !== "service") return
+    if (!root.service.online && !root.service.isServiceCommand(args)) return
     root.actionDomain = domain
+    root.activeControlKey = key
     root.service.runControl(label, args, function(error) {
       if (error === null) root.actionDomain = ""
+      root.activeControlKey = ""
     })
   }
 
   function toggleProvider(p) {
     if (!p || !p.configured) return
     var enabling = !root.providerIsEnabled(p.id)
-    root.runAction("providers",
+    root.runAction("providers", "provider:" + p.id,
       (enabling ? "Enabling " : "Disabling ") + p.name,
       ["set-apply", p.id, enabling ? "on" : "off", "--targets", "codex", "--activate"])
   }
@@ -433,8 +442,7 @@ Panel {
             id: modesSection
             // The toggles mirror snapshot state; without a first read they
             // would show "off" as if it were the truth.
-            visible: !!root.service && root.service.online && root.service.hasCallerSecret
-              && !!root.service.snapshot
+            visible: root.controlsReachable && !!root.service.snapshot
             width: parent.width
             spacing: Style.spacing.md
 
@@ -454,7 +462,7 @@ Panel {
               accent: Color.accent
               fontFamily: root.fontFamily
               opacity: root.actionsLocked ? 0.55 : 1
-              onClicked: root.runAction("modes", "Switching login-free mode",
+              onClicked: root.runAction("modes", "login-free", "Switching login-free mode",
                 ["auth-mode", root.loginFree ? "off" : "on"])
             }
 
@@ -467,7 +475,7 @@ Panel {
               accent: Color.accent
               fontFamily: root.fontFamily
               opacity: root.actionsLocked ? 0.55 : 1
-              onClicked: root.runAction("modes", "Switching signed routing",
+              onClicked: root.runAction("modes", "signed-routing", "Switching signed routing",
                 ["signed-routing", root.signedRouting ? "off" : "on"])
             }
 
@@ -581,7 +589,7 @@ Panel {
 
           Column {
             id: usageSection
-            visible: !!root.service && root.service.online && root.service.hasCallerSecret
+            visible: root.controlsReachable
             width: parent.width
             spacing: Style.spacing.md
 
@@ -797,8 +805,7 @@ Panel {
 
           Column {
             id: providersSection
-            visible: !!root.service && root.service.online && root.service.hasCallerSecret
-              && root.setupProviders.length > 0
+            visible: root.controlsReachable && root.setupProviders.length > 0
             width: parent.width
             spacing: Style.spacing.md
 
@@ -849,13 +856,16 @@ Panel {
             Button {
               visible: !root.service || !root.service.online
               width: parent.width
-              text: "Start service"
+              readonly property bool mine: root.activeControlKey === "start"
+                && !!root.service && root.service.mutationRunning
+              text: mine ? "Starting…" : "Start service"
               enabled: !!root.service && !root.service.mutationRunning
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
-              onClicked: root.runAction("maintenance", "Starting service", ["service", "start"])
+              onClicked: root.runAction("maintenance", "start", "Starting service",
+                ["service", "start"])
             }
 
             Row {
@@ -867,39 +877,46 @@ Panel {
 
               Button {
                 width: parent.cellWidth
-                text: "Restart"
+                readonly property bool mine: root.activeControlKey === "restart"
+                  && !!root.service && root.service.mutationRunning
+                text: mine ? "Restarting…" : "Restart"
                 tooltipText: "Restart the codex-router service"
                 enabled: !root.actionsLocked
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "Restarting service",
+                onClicked: root.runAction("maintenance", "restart", "Restarting service",
                   ["service", "restart"])
               }
 
               Button {
                 width: parent.cellWidth
-                text: "Update"
+                readonly property bool mine: root.activeControlKey === "update"
+                  && !!root.service && root.service.mutationRunning
+                text: mine ? "Updating…" : "Update"
                 tooltipText: "Run the router's maintenance task"
                 enabled: !root.actionsLocked
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "Running maintenance", ["maintenance"])
+                onClicked: root.runAction("maintenance", "update", "Running maintenance",
+                  ["maintenance"])
               }
 
               Button {
                 width: parent.cellWidth
-                text: "Fix"
+                readonly property bool mine: root.activeControlKey === "fix"
+                  && !!root.service && root.service.mutationRunning
+                text: mine ? "Fixing…" : "Fix"
                 tooltipText: "Run doctor --fix to repair the installation"
                 enabled: !root.actionsLocked
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "Running doctor fix",
+                onClicked: root.runAction("maintenance", "fix", "Running doctor fix",
                   ["doctor", "--fix", "--json"])
               }
             }
@@ -1141,9 +1158,10 @@ Panel {
   component ActionNotice: Text {
     id: actionNotice
     property string domain: ""
+    readonly property string notice: root.domainNotice(actionNotice.domain)
 
-    visible: root.domainNotice(actionNotice.domain) !== ""
-    text: root.domainNotice(actionNotice.domain)
+    visible: notice !== ""
+    text: actionNotice.notice
     color: root.service && root.service.mutationRunning ? root.dim : root.urgent
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption

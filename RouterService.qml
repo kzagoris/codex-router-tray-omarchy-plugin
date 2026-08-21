@@ -73,6 +73,10 @@ Item {
   // individual payloads still update around it.
   property string dataError: ""
   property bool dataLoading: false
+  // Set when a refresh was asked for mid-round (a mutation finishing while
+  // the interval read is still in flight) and consumed when the round
+  // closes, so "mutate, then re-read" can never be silently dropped.
+  property bool _refreshPending: false
   // Wall-clock of the last round that produced any fresh payload.
   property double lastUpdatedAt: 0
 
@@ -296,8 +300,7 @@ Item {
     }
     // Loopback only, capability-authenticated. Never log this URL: it
     // embeds the caller secret.
-    request.open("POST", "http://127.0.0.1:" + root.port
-                 + "/_codex-router/" + root.callerSecret + "/panel/invoke")
+    request.open("POST", root.callerUrl("panel/invoke"))
     request.setRequestHeader("Content-Type", "application/json")
     request.send(JSON.stringify({ command: command, args: args }))
   }
@@ -341,7 +344,11 @@ Item {
   // enabled, independently). Called on panel open, on the data interval
   // while open, and — from phase 4 — after every mutation.
   function refreshData() {
-    if (!root.online || !root.hasCallerSecret || root.dataLoading) return
+    if (!root.online || !root.hasCallerSecret) return
+    if (root.dataLoading) {
+      root._refreshPending = true
+      return
+    }
 
     root.dataLoading = true
     var rounds = [{ command: "control_snapshot", prop: "snapshot" },
@@ -371,6 +378,12 @@ Item {
       root.dataLoading = false
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = Date.now()
+      // A mutation landed while this round was flying: its re-read was
+      // parked, and this is where it finally runs.
+      if (root._refreshPending) {
+        root._refreshPending = false
+        refreshData()
+      }
     }
 
     function receiverFor(round) {
@@ -405,17 +418,55 @@ Item {
   // time; further requests queue behind it so a slow catalog rebuild can
   // never overlap a toggle clicked in impatience.
 
-  // Same resolution order as the tray: explicit setting, then env, then the
-  // standard data locations. No existence probe — a wrong root surfaces as
-  // an honest spawn failure instead of silent fallback.
+  // Candidate order as the tray resolves it: explicit setting, then env,
+  // then the standard data locations — but like the tray, a candidate only
+  // wins if it actually contains the control script.
   readonly property string _envSourceRoot: Quickshell.env("MODEL_ROUTER_SOURCE_ROOT") || ""
   readonly property string _envDataHome: Quickshell.env("XDG_DATA_HOME") || ""
-  readonly property string sourceRoot: {
-    if (root.sourceRootOverride !== "") return root.sourceRootOverride
-    if (root._envSourceRoot !== "") return root._envSourceRoot
-    if (root._envDataHome !== "") return root._envDataHome + "/codex-router"
+  readonly property string _defaultSourceRoot: {
     var home = Quickshell.env("HOME") || ""
     return home !== "" ? home + "/.local/share/codex-router" : ""
+  }
+
+  // Existence probe behind resolveSourceRoot(). waitForJob() parks the
+  // caller until the async load settles — a stat on local disk, the same
+  // blocking cost the tray pays for its existsSync() checks.
+  FileView {
+    id: sourceProbe
+    printErrors: false
+    watchChanges: false
+
+    property bool ok: false
+    onLoaded: ok = true
+    onLoadFailed: ok = false
+  }
+
+  function _hasControlScript(checkout) {
+    if (checkout === "") return false
+    sourceProbe.ok = false
+    sourceProbe.path = checkout + "/src/control.mjs"
+    // reload(): re-assigning an unchanged path starts no new job.
+    sourceProbe.reload()
+    sourceProbe.waitForJob()
+    return sourceProbe.ok
+  }
+
+  // Resolved fresh per run rather than cached in a binding: settings and env
+  // can change under us, and a stale root would fail every mutation until
+  // the shell restarted.
+  function resolveSourceRoot() {
+    var candidates = []
+    if (root.sourceRootOverride !== "") candidates.push(root.sourceRootOverride)
+    if (root._envSourceRoot !== "") candidates.push(root._envSourceRoot)
+    if (root._envDataHome !== "") candidates.push(root._envDataHome + "/codex-router")
+    if (root._defaultSourceRoot !== "") candidates.push(root._defaultSourceRoot)
+
+    for (var i = 0; i < candidates.length; i++)
+      if (_hasControlScript(candidates[i])) return candidates[i]
+
+    // Nothing verified: hand back the first candidate so the spawn error
+    // names the configured path instead of pretending there was none.
+    return candidates.length > 0 ? candidates[0] : ""
   }
 
   // The shell is a GUI session and inherits whatever PATH systemd gave it;
@@ -439,6 +490,25 @@ Item {
   property string mutationLabel: ""
   property string mutationError: ""
 
+  // The one home for command-class questions, so the CLI vocabulary
+  // (budgets, service special cases) never scatters across call sites.
+  function commandBudgetMs(args) {
+    // Catalog rebuilds (set-apply) get the tray's extended budget; everything
+    // else answers well inside two minutes.
+    return args[0] === "set-apply" ? 330000 : 120000
+  }
+
+  function isServiceCommand(args) {
+    return String(args[0] || "") === "service"
+  }
+
+  // The one place that assembles capability URLs: both leaves share the
+  // prefix that embeds the caller secret, so it is never rebuilt ad hoc —
+  // and never logged.
+  function callerUrl(leaf) {
+    return "http://127.0.0.1:" + root.port + "/_codex-router/" + root.callerSecret + "/" + leaf
+  }
+
   property var _controlQueue: []
   property bool _controlTimedOut: false
   property string _controlStdout: ""
@@ -456,16 +526,21 @@ Item {
       // line either way — constrain them to the shape the router itself
       // enforces rather than trusting the caller.
       if (!/^-{0,2}[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(arg)) {
-        if (onDone) onDone("Internal error: refusing to run the control command.")
+        root.mutationError = "Internal error: refusing to run the control command."
+        if (onDone) onDone(root.mutationError)
         return
       }
       clean.push(arg)
     }
-    if (root.sourceRoot === "") {
-      if (onDone) onDone("Router checkout not found — set the source directory in the widget settings.")
+
+    var checkout = resolveSourceRoot()
+    if (checkout === "") {
+      root.mutationError = "Router checkout not found — set the source directory in the widget settings."
+      if (onDone) onDone(root.mutationError)
       return
     }
-    _controlQueue.push({ label: String(label || ""), args: clean, onDone: onDone })
+
+    _controlQueue.push({ label: String(label || ""), args: clean, checkout: checkout, onDone: onDone })
     _drainControl()
   }
 
@@ -481,11 +556,9 @@ Item {
     root._controlStderr = ""
 
     controlProc.job = job
-    // Catalog rebuilds (set-apply) get the tray's extended budget; everything
-    // else answers well inside two minutes.
-    controlWatchdog.interval = job.args[0] === "set-apply" ? 330000 : 120000
-    controlProc.command = [root.nodeCommand, root.sourceRoot + "/src/control.mjs"].concat(job.args)
-    controlProc.workingDirectory = root.sourceRoot
+    controlWatchdog.interval = root.commandBudgetMs(job.args)
+    controlProc.command = [root.nodeCommand, job.checkout + "/src/control.mjs"].concat(job.args)
+    controlProc.workingDirectory = job.checkout
     controlProc.running = true
     controlWatchdog.restart()
   }
@@ -510,10 +583,12 @@ Item {
       if (finishedJob && finishedJob.onDone) finishedJob.onDone(error)
     } else {
       if (finishedJob && finishedJob.onDone) finishedJob.onDone(null)
-      // Mutate, then re-read. Service commands are skipped: the daemon is
-      // down or bouncing by definition, and both poll timers pick the new
-      // instance up on their own cadence.
-      if (finishedJob && finishedJob.args[0] !== "service") {
+      // Mutate, then re-read. Service commands bounce the daemon, so an
+      // immediate read would race it; one delayed kick covers start/stop/
+      // restart and the regular timers heal anything still settling.
+      if (finishedJob && root.isServiceCommand(finishedJob.args)) {
+        serviceRefreshTimer.restart()
+      } else {
         root.pollHealth()
         root.refreshData()
       }
@@ -569,28 +644,49 @@ Item {
 
   // ------------------------------------------------------- web panel link
 
-  // The plugin's bin/panel: build the capability URL and hand it to
-  // xdg-open. The URL embeds the caller secret, so it exists only inside
-  // this call — never logged, nothing collected from the opener.
+  // The plugin's bin/panel: hand the capability URL to xdg-open, gated the
+  // same way bin/panel gates itself (no key, no router — no browser). The
+  // URL travels through stdin to a fixed command instead of argv: quickshell
+  // logs the whole command when a binary fails to start, and that log line
+  // must never contain the secret.
   function openWebPanel() {
     if (!root.hasCallerSecret) {
       console.warn("codex-router-tray", "No caller key — cannot open the web panel.")
       return false
     }
-    webPanelOpener.command = ["xdg-open",
-      "http://127.0.0.1:" + root.port + "/_codex-router/" + root.callerSecret + "/panel/"]
+    if (!root.online) {
+      console.warn("codex-router-tray", "Router offline — not opening the web panel.")
+      return false
+    }
+    if (webPanelOpener.running) return true
     webPanelOpener.running = true
+    // Spawn is synchronous, so the pipe exists by this line.
+    webPanelOpener.write(callerUrl("panel/") + "\n")
     return true
   }
 
   Process {
     id: webPanelOpener
     running: false
+    command: ["sh", "-c", "read -r url && exec xdg-open \"$url\""]
 
     stderr: StdioCollector {
       waitForEnd: true
       // Generic on purpose: opener diagnostics name no URLs.
       onStreamFinished: if (text.trim() !== "") console.warn("codex-router-tray", "xdg-open failed")
+    }
+  }
+
+  // Service commands bounce the daemon; PLAN §4 still wants a refresh after
+  // every action. One delayed kick after start/stop/restart — anything that
+  // is still settling is healed by the regular poll timers.
+  Timer {
+    id: serviceRefreshTimer
+    interval: 3000
+    repeat: false
+    onTriggered: {
+      root.pollHealth()
+      root.refreshData()
     }
   }
 
