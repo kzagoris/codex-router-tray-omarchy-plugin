@@ -38,7 +38,10 @@ Item {
   // every consumer (dot, tooltip, hero meta) speaks. Degraded providers
   // surface as their own flag rather than a fifth state: the router keeps
   // serving while degraded, it just wants attention.
-  readonly property string state: {
+  //
+  // Renamed away from `state`: shadowing QQuickItem's writable `state`
+  // property makes tooling (and readers) trip over which one wins.
+  readonly property string routerState: {
     if (!root.online) return "offline"
     if (degraded || String(activity.state || "") === "error") return "error"
     if (String(activity.state || "") === "generating") return "generating"
@@ -55,7 +58,12 @@ Item {
   readonly property var activeRequests: Array.isArray(activity.active) ? activity.active : []
 
   // Last (or currently) routing provider — what the optional bar label shows.
-  readonly property string providerName: String(activity.provider || "")
+  // Latched on data arrival (not in a binding): the idle payload carries no
+  // provider, so without the latch the label would flap between "Codex
+  // Router" and a provider id on every request, resizing the bar slot each
+  // time. Cleared only when offline.
+  property string lastProviderName: ""
+  readonly property string providerName: root.online ? lastProviderName : ""
 
   readonly property string version: root.health ? String(health.version || "") : ""
 
@@ -64,16 +72,21 @@ Item {
   property var _inFlight: null
 
   function pollHealth() {
-    // Abort, don't queue: a hung connection must never stack up requests
-    // faster than they drain.
-    if (_inFlight) {
-      _inFlight.onreadystatechange = null
-      try { _inFlight.abort() } catch (e) {}
-      _inFlight = null
-    }
+    // Skip, don't abort: a response that is merely slower than the interval
+    // is still a healthy answer, and dropping it would report "offline"
+    // against a router that is responding. A wedged connection is bounded by
+    // the XHR timeout below instead.
+    if (_inFlight) return
 
     var xhr = new XMLHttpRequest()
     _inFlight = xhr
+    // Bound the wait inside the poll cadence so a router that accepts but
+    // never answers cannot leave the dot green on stale data forever.
+    xhr.timeout = Math.max(1500, Math.max(2, root.healthIntervalSec) * 1000 - 250)
+    xhr.ontimeout = function() {
+      if (_inFlight === xhr) _inFlight = null
+      applyHealth(0, "")
+    }
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       if (_inFlight === xhr) _inFlight = null
@@ -93,6 +106,10 @@ Item {
     try {
       var parsed = JSON.parse(String(text))
       root.health = parsed && typeof parsed === "object" ? parsed : null
+      if (root.online) {
+        var live = String(root.activity.provider || "")
+        if (live !== "") root.lastProviderName = live
+      }
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
       root.health = null
@@ -101,6 +118,7 @@ Item {
 
   onHealthIntervalSecChanged: healthTimer.restart()
 
+  // triggeredOnStart covers the first poll; no Component.onCompleted kick.
   Timer {
     id: healthTimer
     interval: Math.max(2, root.healthIntervalSec) * 1000
@@ -109,6 +127,4 @@ Item {
     repeat: true
     onTriggered: root.pollHealth()
   }
-
-  Component.onCompleted: pollHealth()
 }

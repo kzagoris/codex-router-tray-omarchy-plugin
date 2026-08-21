@@ -29,14 +29,22 @@ BarWidget {
     portOverride: root.routerPortSetting
   }
 
+  // Cross-file access goes through an explicit property: ids are file-scoped,
+  // so Panel.qml cannot reach `router` by name (see refresh()).
+  readonly property alias routerService: router
+
   // ------------------------------------------------------------ settings
 
   readonly property int healthIntervalSec: {
     var n = parseInt(setting("healthIntervalSec", 4), 10)
     return isFinite(n) && n >= 2 ? n : 4
   }
+  // Only a user-set port overrides the service default; passing the fallback
+  // here unconditionally would make MODEL_ROUTER_PORT unreachable.
   readonly property string routerPortSetting: {
-    var p = parseInt(setting("port", 4202), 10)
+    var raw = settings ? settings["port"] : undefined
+    if (raw === undefined || raw === null || raw === "") return ""
+    var p = parseInt(raw, 10)
     return isFinite(p) && p >= 1024 && p <= 65535 ? String(p) : ""
   }
 
@@ -52,15 +60,17 @@ BarWidget {
   readonly property color generatingColor: "#c9973f"
 
   readonly property color dotColor: {
-    if (router.state === "generating") return generatingColor
-    if (router.state === "error") return urgent
-    if (router.state === "idle") return okColor
+    if (router.routerState === "generating") return generatingColor
+    if (router.routerState === "error") return urgent
+    if (router.routerState === "idle") return okColor
     return Color.muted
   }
 
   // While traffic flows the dot breathes; anything static reads "dead"
-  // during a long generation.
-  readonly property bool pulsing: router.state === "generating"
+  // during a long generation. Keyed on in-flight requests rather than the
+  // state word, so a degraded-but-serving router pulses red instead of
+  // sitting frozen.
+  readonly property bool pulsing: router.activeCount > 0
   onPulsingChanged: if (!pulsing) statusDot.opacity = 1
 
   // ------------------------------------------------------------- label
@@ -73,16 +83,23 @@ BarWidget {
   readonly property string labelText: router.providerName !== "" ? router.providerName : "Codex Router"
   readonly property bool labelVisible: providerLabelWanted && !vertical
 
-  function tooltipSummary() {
-    if (router.state === "generating")
+  // A property, not a function: Bar.showTooltip snapshots the string at
+  // hover-enter only, so a live re-evaluation needs this push to update an
+  // already-open tooltip — exactly the idle→generating moment it matters.
+  readonly property string tooltipTextLive: {
+    if (router.routerState === "generating")
       return "Codex Router — generating (" + router.activeCount + " active)"
-    if (router.state === "error") {
+    if (router.routerState === "error") {
       var names = router.degradedNames.join(", ")
-      return names !== "" ? "Codex Router — degraded: " + names : "Codex Router — error"
+      var base = names !== "" ? "Codex Router — degraded: " + names : "Codex Router — error"
+      return router.activeCount > 0 ? base + " (" + router.activeCount + " active)" : base
     }
-    if (router.state === "idle")
+    if (router.routerState === "idle")
       return "Codex Router — idle" + (router.version !== "" ? " · v" + router.version : "")
     return "Codex Router — offline"
+  }
+  onTooltipTextLiveChanged: {
+    if (button.tooltipHovered && root.bar) root.bar.showTooltip(button, tooltipTextLive)
   }
 
   // ---- Panel popup. Shape contract for shell.summon/hide/toggle routing:
@@ -166,14 +183,14 @@ BarWidget {
     text: ""
     labelVisible: false
     hasVisualContent: true
-    tooltipText: root.tooltipSummary()
+    tooltipText: root.tooltipTextLive
     // An icon-only slot must still be a full icon slot: WidgetButton's own
     // fallback measures its internal (hidden) label, which is empty here,
     // and would squeeze the mark into a sliver that clips the status dot.
     fixedWidth: root.vertical ? -1
       : root.labelVisible ? contentRow.implicitWidth + scaledHorizontalMargin * 2
       : Style.bar.iconSlot
-    fixedHeight: root.vertical && !root.labelVisible ? Style.bar.iconSlot : -1
+    fixedHeight: root.vertical ? Style.bar.iconSlot : -1
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton) return // web-panel opener arrives with the controls (phase 4)

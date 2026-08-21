@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import qs.Commons
 import qs.Ui
 
@@ -45,6 +44,7 @@ Panel {
   //      the bar's center hover reveal: summoning moves no pointer, and the
   //      indicators would stay lit behind the panel otherwise (see clock).
   function open() {
+    refresh()
     root.controller.show()
     // Set after showing, not before: showing hands the popout coordinator
     // over, which closes whichever panel was open, and that close clears the
@@ -56,7 +56,9 @@ Panel {
 
   function close() {
     setCenterHoverRevealSuppressed(false)
-    root.close()
+    // Not root.close(): the override shadows the base method, so that would
+    // recurse. The base implementation lives on the controller.
+    root.controller.hide()
   }
 
   // Summoning by hotkey moves no pointer, so a hover the bar was still
@@ -78,7 +80,7 @@ Panel {
   readonly property var barIdentity: hostWidget || root
 
   function refresh() {
-    if (hostWidget && hostWidget.router) hostWidget.router.pollHealth()
+    if (hostWidget && hostWidget.routerService) hostWidget.routerService.pollHealth()
   }
 
   KeyboardPanel {
@@ -110,7 +112,6 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
           id: column
