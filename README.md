@@ -40,7 +40,10 @@ Providers, and Models. Each view keeps the same three parts:
 - **The footer** has a manual refresh button and the time of the last update.
 
 The panel does not obey the single-column style of the first-party widgets.
-This is deliberate. ADR 0001 in the development repository gives the reason.
+This is deliberate. The catalog has 111 models from 19 providers. In one
+scroll column, these rows make a column that is too long, and the usage data
+and the controls go far below the models. The four views keep each part at a
+length that you can read.
 
 The shell keeps your selected view for the session. The view stays the same
 after you close the panel and open it again. A shell restart sets the view
@@ -213,18 +216,6 @@ the plugin.
 | The widget is absent from the gallery | `omarchy plugin list --json \| jq '.[] \| select(.id=="kzagoris.codex-router-tray")'` |
 | The journal shows QML errors | `qs log -p "$OMARCHY_PATH/shell" --tail 100` |
 
-## Development
-
-Work on a clone in your plugins directory. Then examine it in that location:
-
-```sh
-omarchy plugin validate ~/.config/omarchy/plugins/kzagoris.codex-router-tray
-qs log -p "$OMARCHY_PATH/shell" --tail 100   # QML errors
-```
-
-A change in the body of a QML file that compiles reloads when you save the
-file. A change to an import, or a new file, needs `omarchy restart shell`.
-
 ## Changelog
 
 ### 0.2.0
@@ -246,9 +237,6 @@ file. A change to an import, or a new file, needs `omarchy restart shell`.
   view, where a routing mode belongs.
 - The control CLI wrapper accepts a slug with a provider, for example
   `opencode-free/big-pickle`.
-- A test harness with no dependencies (the test runner of Node) examines the
-  pure logic modules. Captured router snapshots feed the tests. A change to a
-  payload thus makes a test fail, not the panel.
 
 ### 0.1.0
 
