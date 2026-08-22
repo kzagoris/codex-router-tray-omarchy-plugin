@@ -173,7 +173,6 @@ function viewModel(target, options) {
     totals.models++;
     if (visible) totals.pickerVisible++;
     if (subagentOn) totals.subagentsOn++;
-    if (badge.kind === "checking") anyChecking = true;
 
     var pickerRow = setting === PICKER;
     var row = {
@@ -189,7 +188,10 @@ function viewModel(target, options) {
       // row and its explanation, and its subagent toggle is inert rather
       // than silently unhiding the model.
       interlocked: !pickerRow && !visible,
-      toggleEnabled: pickerRow || visible
+      toggleEnabled: pickerRow || visible,
+      // Only a badge somebody is looking at earns the short-interval
+      // re-read: Picker draws no badge, and a collapsed group draws no row.
+      checking: !pickerRow && badge.kind === "checking"
     };
 
     if (!byProvider[providerId]) {
@@ -211,7 +213,10 @@ function viewModel(target, options) {
       return left.slug < right.slug ? -1 : (left.slug > right.slug ? 1 : 0);
     });
     var onCount = 0;
-    for (var r = 0; r < rows.length; r++) if (rows[r].on) onCount++;
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r].on) onCount++;
+      if (rows[r].checking && collapsed[id] !== true) anyChecking = true;
+    }
     groups.push({
       providerId: id,
       providerName: names[id] || id,

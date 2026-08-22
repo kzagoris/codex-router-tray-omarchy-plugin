@@ -71,13 +71,22 @@ Item {
 
   // --------------------------------------------------------- lazy loading
 
-  // First entry pays for the snapshot; a view nobody opens fetches nothing.
-  // After that the panel's own refresh and the post-mutation re-read keep it
+  // The catalog is not a payload of its own: it rides in the same
+  // control_snapshot the MODES switches and the provider toggles read, so
+  // opening the panel at all pays for it and this view cannot make that
+  // cheaper without splitting the router's own command. What it can do is
+  // start nothing extra.
+  //
+  // First entry pays for the snapshot if nothing else has read it yet. After
+  // that the panel's own refresh and the post-mutation re-read keep it
   // current — this view starts no timer of its own except the proof re-read
-  // below.
-  onActiveChanged: {
-    if (!modelsRoot.active) return
-    if (!modelsRoot.controlsReachable) return
+  // below. Entering while the router is unreachable must not strand the view
+  // on an empty list, so reachability arriving later is a second trigger.
+  onActiveChanged: modelsRoot._loadIfNeeded()
+  onControlsReachableChanged: modelsRoot._loadIfNeeded()
+
+  function _loadIfNeeded() {
+    if (!modelsRoot.active || !modelsRoot.controlsReachable) return
     if (!modelsRoot.service.snapshot) modelsRoot.service.refreshData()
   }
 
@@ -104,7 +113,29 @@ Item {
 
   property var _queue: []
   property bool busy: false
-  property string notice: ""
+  // Label of the command running now, and the last failure with the intent
+  // it belongs to. They are separate because a queue keeps moving: the next
+  // command's busy label must not erase the reason the previous one failed.
+  property string runningLabel: ""
+  property string errorNotice: ""
+  property string _errorKey: ""
+
+  readonly property string notice: modelsRoot.busy
+    ? modelsRoot.runningLabel + "…" : modelsRoot.errorNotice
+
+  // Wall-clock of the moment the queue last drained. A read that *began*
+  // after it is the one that can answer for everything that ran; a round
+  // that merely finishes later may have started before the change landed.
+  property double _settledAt: 0
+  property bool _reconciling: false
+  property bool _lastRunFailed: false
+
+  // Switching the setting moves the operator away from the row that failed,
+  // so its message goes with them.
+  onSettingChanged: {
+    modelsRoot.errorNotice = ""
+    modelsRoot._errorKey = ""
+  }
 
   function _cloneOverrides() {
     var next = { picker: ({}), subagents: ({}) }
@@ -124,6 +155,12 @@ Item {
     modelsRoot.overrides = next
   }
 
+  function _queuedFor(key) {
+    for (var i = 0; i < modelsRoot._queue.length; i++)
+      if (modelsRoot._queue[i].key === key) return true
+    return false
+  }
+
   // key identifies what an intent is about, so a second click on the same
   // row replaces the queued one instead of adding to it.
   function _enqueue(intent) {
@@ -132,25 +169,21 @@ Item {
       if (modelsRoot._queue[i].key !== intent.key) next.push(modelsRoot._queue[i])
     next.push(intent)
     modelsRoot._queue = next
+    if (modelsRoot._errorKey === intent.key) {
+      modelsRoot.errorNotice = ""
+      modelsRoot._errorKey = ""
+    }
     modelsRoot._drain()
   }
 
   function _drain() {
     if (modelsRoot.busy) return
     if (modelsRoot._queue.length === 0) {
-      // Drained: one re-read reconciles everything that ran, and the
-      // optimistic overrides retire when it lands (see onDataLoadingChanged).
-      if (modelsRoot.service) {
-        modelsRoot.service.deferAutoRefresh = false
-        modelsRoot._reconciling = true
-        modelsRoot.service.refreshData()
-      }
+      modelsRoot._settle()
       return
     }
     if (!modelsRoot.controlsReachable) {
-      modelsRoot._queue = []
-      modelsRoot.overrides = { picker: ({}), subagents: ({}) }
-      modelsRoot.notice = "Router unreachable — the change was not applied."
+      modelsRoot._abort("Router unreachable — the change was not applied.")
       return
     }
 
@@ -158,37 +191,68 @@ Item {
     var intent = modelsRoot._queue[0]
     modelsRoot._queue = next
     modelsRoot.busy = true
-    modelsRoot.notice = intent.label + "…"
+    modelsRoot.runningLabel = intent.label
     // The service's own "mutate, then re-read" would fire once per command;
     // this view reconciles once, when the whole queue has drained.
     modelsRoot.service.deferAutoRefresh = true
 
     modelsRoot.service.runControl(intent.label, intent.args, function(error) {
       modelsRoot.busy = false
+      modelsRoot._lastRunFailed = error !== null
       if (error !== null) {
-        // Never leave a setting on screen that did not take.
-        if (intent.setting !== "" && intent.slug !== "")
+        // Never leave a setting on screen that did not take — unless a newer
+        // click for the same row is already queued, in which case that
+        // intent owns the override and reverting would flap the switch.
+        if (intent.setting !== "" && intent.slug !== "" && !modelsRoot._queuedFor(intent.key))
           modelsRoot._setOverride(intent.setting, intent.slug, null)
-        modelsRoot.notice = error
-      } else {
-        modelsRoot.notice = ""
+        modelsRoot.errorNotice = error
+        modelsRoot._errorKey = intent.key
+      } else if (modelsRoot._errorKey === intent.key) {
+        // The retry of the thing that failed worked; its message is stale.
+        modelsRoot.errorNotice = ""
+        modelsRoot._errorKey = ""
       }
       modelsRoot._drain()
     })
   }
 
-  // True between the drain and the re-read that reconciles it.
-  property bool _reconciling: false
+  // The queue is empty: hand the re-read back to the service's own
+  // "mutate, then re-read" by clearing the deferral *before* this callback
+  // returns — the jobSucceeded that follows the last command then performs
+  // exactly one read. A failed last command emits no such signal, so that
+  // case asks for the read itself.
+  function _settle() {
+    if (!modelsRoot.service) return
+    modelsRoot._settledAt = Date.now()
+    modelsRoot._reconciling = true
+    modelsRoot.service.deferAutoRefresh = false
+    if (modelsRoot._lastRunFailed) modelsRoot.service.refreshData()
+  }
+
+  // Nothing can be applied: drop the queue, drop every optimistic toggle so
+  // the panel stops showing settings that did not take, and never leave the
+  // service's refresh policy switched off behind us.
+  function _abort(message) {
+    modelsRoot._queue = []
+    modelsRoot.overrides = { picker: ({}), subagents: ({}) }
+    modelsRoot._reconciling = false
+    modelsRoot.errorNotice = message
+    modelsRoot._errorKey = ""
+    if (modelsRoot.service) modelsRoot.service.deferAutoRefresh = false
+  }
 
   Connections {
     target: modelsRoot.service
     enabled: !!modelsRoot.service
 
-    // The reconciling read has landed: the snapshot now answers for every
-    // toggle, so the optimistic overrides retire together.
-    function onDataLoadingChanged() {
-      if (modelsRoot.service.dataLoading) return
+    // A read has landed. It reconciles this view only if it began after the
+    // last command finished and nothing is pending — a round that was
+    // already in flight carries pre-mutation data, and clearing the
+    // optimistic toggles against it would show the operator the old state.
+    function onLastUpdatedAtChanged() {
       if (!modelsRoot._reconciling) return
+      if (modelsRoot.busy || modelsRoot._queue.length > 0) return
+      if (modelsRoot.service.dataStartedAt < modelsRoot._settledAt) return
       modelsRoot._reconciling = false
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
     }
