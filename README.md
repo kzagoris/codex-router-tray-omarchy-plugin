@@ -8,7 +8,9 @@ inside the Omarchy shell (Quickshell).
 
 Plugin id: `kzagoris.codex-router-tray` · License: MIT
 
-![Panel — status, modes, activity, usage](docs/screenshots/panel-top.png)
+<p align="center">
+  <img src="docs/screenshots/panel-top.png" alt="Panel — status, modes, activity, usage" width="380">
+</p>
 
 ## What you get
 
@@ -23,12 +25,12 @@ Plugin id: `kzagoris.codex-router-tray` · License: MIT
 
 Optional label shows the provider currently handling traffic.
 
-![Bar widget](docs/screenshots/bar-widget.png)
+<img src="docs/screenshots/bar-widget.png" alt="Bar widget" width="192">
 
 On left/right (vertical) bars the widget stacks one icon-slot per line, like
 the clock:
 
-![Vertical bar widget](docs/screenshots/bar-vertical.png)
+<img src="docs/screenshots/bar-vertical.png" alt="Vertical bar widget" width="135">
 
 **Panel** (left click) — one scrolling column, agents-style:
 
@@ -40,7 +42,9 @@ the clock:
 - **Providers** — every catalog provider with configured badge and enable/disable toggle; "Add key" / "Sign in" hand off to the router's own web panel
 - **Maintenance** — restart service, update, `doctor --fix`, open web panel, refresh
 
-![Panel — providers and maintenance](docs/screenshots/panel-providers.png)
+<p align="center">
+  <img src="docs/screenshots/panel-providers.png" alt="Panel — providers and maintenance" width="380">
+</p>
 
 **Middle click** opens the router's browser panel at its capability URL — the
 escape hatch for heavy flows (provider credentials are never typed into the
@@ -129,12 +133,11 @@ All traffic is loopback-only. No credentials ever flow through the plugin.
 
 ## Development
 
-From the repository root (not this folder):
+Work on a clone in your plugins directory and validate it in place:
 
 ```sh
-./scripts/lint.sh        # Qt6 qmllint with the shell's import paths
-./sync.sh                # copy plugin/ into ~/.config/omarchy/plugins/
 omarchy plugin validate ~/.config/omarchy/plugins/kzagoris.codex-router-tray
+qs log -p "$OMARCHY_PATH/shell" --tail 100   # QML errors
 ```
 
 Body edits inside an already-compiling QML file hot-reload on save; import or
