@@ -1,74 +1,136 @@
 # Codex Router Tray
 
-Native [Omarchy](https://omarchy.org) shell bar widget for
-[codex-router](https://github.com/duolahypercho/codex-router): live router
-status, usage, provider controls, and maintenance — replacing the Tauri/Electron
-desktop companion on Linux. No second runtime, no Rust toolchain; just QML
-inside the Omarchy shell (Quickshell).
+Codex Router Tray is a bar widget for the [Omarchy](https://omarchy.org)
+shell. It shows the status of
+[codex-router](https://github.com/duolahypercho/codex-router), its usage, its
+providers, and its models. It also gives you the maintenance commands.
 
-Plugin id: `kzagoris.codex-router-tray` · License: MIT
+The widget replaces the Tauri desktop companion on Linux. It adds no second
+runtime and no Rust toolchain. The code is QML inside the Omarchy shell
+(Quickshell).
+
+Plugin id: `kzagoris.codex-router-tray` · Version 0.2.0 · License: MIT
 
 <p align="center">
-  <img src="docs/screenshots/panel-top.webp" alt="Panel — status, modes, activity, usage" width="380">
+  <img src="preview.png" alt="The four panel views: Status, Usage, Providers, and Models" width="900">
 </p>
 
 ## What you get
 
-**Bar pill** — a router glyph with a status dot that reads at a glance:
+**The bar pill** shows a router glyph with a status dot. The color of the dot
+gives the state of the router.
 
 | Dot | Meaning |
 |---|---|
-| green | running, idle |
-| amber (pulsing) | generating — requests in flight |
-| red | degraded or error state |
-| gray | router offline / unreachable |
+| green | The router runs and is idle. |
+| amber (it pulses) | The router routes one or more active requests. |
+| red | The router is degraded, or it has an error. |
+| gray | The router is off, or the widget cannot get access to it. |
 
-Optional label shows the provider currently handling traffic.
+An optional label shows the provider that routes the traffic now. On a left
+bar or a right bar, the widget puts one icon in each line, like the clock.
 
-<img src="docs/screenshots/bar-widget.webp" alt="Bar widget" width="192">
+**The panel** opens with a left click. It has four views: Status, Usage,
+Providers, and Models. Each view keeps the same three parts:
 
-On left/right (vertical) bars the widget stacks one icon-slot per line, like
-the clock:
+- **The hero line** shows the live state (`RUNNING · V0.4.0-BETA.4`,
+  `GENERATING · 2 ACTIVE`, `OFFLINE`, or `DEGRADED: …`).
+- **The status box** shows guidance when a problem occurs. The router is off,
+  the caller key is absent, or a provider is degraded.
+- **The footer** has a manual refresh button and the time of the last update.
 
-<img src="docs/screenshots/bar-vertical.webp" alt="Vertical bar widget" width="135">
+The panel does not obey the single-column style of the first-party widgets.
+This is deliberate. ADR 0001 in the development repository gives the reason.
 
-**Panel** (left click) — a switcher over four views, with the hero, status
-box and footer visible in every view (the panel deviates from the
-first-party single-column idiom on purpose; see ADR 0001 in the dev repo):
+The shell keeps your selected view for the session. The view stays the same
+after you close the panel and open it again. A shell restart sets the view
+back to Status.
 
-- **Status** — modes (login-free, signed routing, tool-result compaction), live activity, maintenance actions
-- **Usage** — per-provider tokens by day (7-day bars) and by provider (share rows); optional ChatGPT quota cards
-- **Providers** — every catalog provider with configured badge and enable/disable toggle; "Add key" / "Sign in" hand off to the router's own web panel
-- **Models** — every catalog model an enabled provider offers, grouped by provider and collapsible. A sub-switcher chooses whether the row toggle edits **picker visibility** or **subagent eligibility**, and carries both counts, so a click can never land on the wrong setting. Picker rows show the model's slug; subagent rows show its proof (`Proven v2`, `Untested`, `Working…`, `Error: …` with the router's own reason on hover). A model hidden from the picker cannot be a subagent: its toggle is inert, the badge says why, and the row goes to the Picker sub-view rather than unhiding the model behind your back. Show-all / hide-all and subagents-on / subagents-off act on the whole list or one provider through the router's own bulk verbs — one command, not one per model.
+### Status
 
-The selected view is session-scoped: it survives a close/open round-trip and
-resets when the shell restarts.
-
-- **Hero** — live state line (`RUNNING · V0.4.0-BETA.4`, `GENERATING · 2 ACTIVE`, `OFFLINE`, `DEGRADED: …`)
-- **Status box** — honest guidance when something is wrong (offline, caller key missing, degraded providers)
-- **Footer** — manual refresh and the last-updated stamp
+The Status view has the three modes of the router: login-free routing, signed
+routing, and compaction of old tool results. Below the modes, it shows the
+live activity and the maintenance commands: Restart, Update, Fix, and Open
+web panel.
 
 <p align="center">
-  <img src="docs/screenshots/panel-providers.webp" alt="Panel — providers and maintenance" width="380">
+  <img src="docs/screenshots/status.png" alt="The Status view with modes, activity, and maintenance" width="380">
 </p>
 
-**Middle click** opens the router's browser panel at its capability URL — the
-escape hatch for heavy flows (provider credentials are never typed into the
-plugin; the web panel is the router's sanctioned surface for secrets).
+### Usage
 
-## Requirements
+The Usage view shows the tokens of one provider. A switcher selects the
+provider. The bars show the tokens for each of the last 7 days. The rows
+below show the part of the total that each provider used. If you turn on the
+ChatGPT quota cards, they show here.
 
-- Omarchy 4.x (Quattro shell / Quickshell)
-- **codex-router installed and running** — payload shapes verified against
-  v0.4.0-beta.4; start it with `systemctl --user start codex-router`
-- **Node.js on PATH** — mutations spawn the router's control CLI
-  (`node …/src/control.mjs`)
-- Router's caller secret at `~/.codex/codex-router/caller-secret` (the router
-  creates it; `./bin/doctor --fix` restores it if lost)
+<p align="center">
+  <img src="docs/screenshots/usage.png" alt="The Usage view with tokens for each day and for each provider" width="380">
+</p>
+
+### Providers
+
+The Providers view shows each provider in the catalog with a badge and a
+toggle. The badge tells you if the provider is configured. The toggle turns
+the provider on or off.
+
+"Add key" and "Sign in" open the web panel of the router. You never type a
+credential into the plugin.
+
+<p align="center">
+  <img src="docs/screenshots/providers.png" alt="The Providers view with badges and toggles" width="380">
+</p>
+
+### Models
+
+The Models view shows each model in the catalog that an enabled provider
+gives. The rows are in groups by provider, and you can collapse each group.
+
+A sub-switcher selects what the row toggle changes: the visibility in the
+picker, or the eligibility as a subagent. Each label carries both counts.
+Thus a click cannot change the wrong setting.
+
+A picker row shows the slug of the model. A subagent row shows the proof:
+`Proven v2`, `Untested`, `Working…`, or `Error: …`. Put the mouse pointer on
+an error to see the reason from the router.
+
+A model that is hidden from the picker cannot be a subagent. Its toggle is
+inert, and the badge gives the cause. A click on that toggle moves you to the
+Picker sub-view. The widget does not make the model visible without your
+permission.
+
+"Show all", "Hide all", "Subagents on", and "Subagents off" operate on the
+full list or on one provider. They use the bulk verbs of the router: one
+command, not one command for each model.
+
+The toggles are optimistic. A toggle changes immediately, and repeated clicks
+on the same model become one command. If a command fails, the toggle goes
+back and the panel shows the message from the router. When the queue is
+empty, the view reads the data one time and reconciles.
+
+<p align="center">
+  <img src="docs/screenshots/models.png" alt="The Models view with picker visibility and subagent eligibility" width="380">
+</p>
+
+**A middle click** opens the browser panel of the router at its capability
+URL. Use it for the large flows. The web panel is the sanctioned surface of
+the router for secrets.
+
+## What you need
+
+- Omarchy 4.x (Quattro shell / Quickshell).
+- codex-router, installed and in operation. Start it with
+  `systemctl --user start codex-router`. The payload shapes agree with
+  v0.4.0-beta.4.
+- Node.js on the PATH. Mutations start the control CLI of the router
+  (`node …/src/control.mjs`).
+- The caller secret of the router at `~/.codex/codex-router/caller-secret`.
+  The router makes this file. If the file is lost, `./bin/doctor --fix` makes
+  it again.
 
 ## Install
 
-Clone this repo into your plugins directory and enable it:
+Clone this repository into your plugins directory. Then turn on the plugin:
 
 ```sh
 git clone https://github.com/kzagoris/codex-router-tray-omarchy-plugin.git \
@@ -76,16 +138,21 @@ git clone https://github.com/kzagoris/codex-router-tray-omarchy-plugin.git \
 omarchy plugin enable kzagoris.codex-router-tray right
 ```
 
-Update later with `git -C ~/.config/omarchy/plugins/kzagoris.codex-router-tray pull`,
-then `omarchy restart shell`.
+To update the plugin later, do these two commands:
 
-The folder must be a real copy — plugin folders may not contain symlinks
-(`omarchy plugin validate` rejects them, and so does the marketplace).
+```sh
+git -C ~/.config/omarchy/plugins/kzagoris.codex-router-tray pull
+omarchy restart shell
+```
+
+The folder must be a real copy. A plugin folder must not contain a symlink.
+`omarchy plugin validate` refuses a symlink, and the marketplace refuses it
+too.
 
 ## Settings
 
-Per-widget settings live in `~/.config/omarchy/shell.json`, in the widget's
-layout entry:
+The settings of the widget are in `~/.config/omarchy/shell.json`, in the
+layout entry of the widget:
 
 ```json
 { "id": "kzagoris.codex-router-tray", "port": 4202 }
@@ -93,15 +160,15 @@ layout entry:
 
 | Key | Default | Description |
 |---|---|---|
-| `healthIntervalSec` | `4` | Health poll interval (2–60) |
-| `dataIntervalSec` | `30` | Usage data refresh interval while readable (15–600) |
-| `showProviderText` | `"Icon only"` | Bar label: `"Icon only"` or `"Provider name"` |
-| `port` | `4202` | Router port override. Unset = `MODEL_ROUTER_PORT` env → `4202` |
-| `stateDir` | `""` | State dir holding `caller-secret`. Unset = `~/.codex/codex-router` |
-| `sourceRoot` | `""` | Router checkout for the control CLI. Unset = `~/.local/share/codex-router` |
-| `accountUsage` | `"Off"` | ChatGPT quota cards. The upstream call is slow; off by default |
+| `healthIntervalSec` | `4` | Interval of the health poll in seconds (2 to 60) |
+| `dataIntervalSec` | `30` | Interval of the usage refresh in seconds, while the widget can read the data (15 to 600) |
+| `showProviderText` | `"Icon only"` | The bar label: `"Icon only"` or `"Provider name"` |
+| `port` | `4202` | The port of the router. If it is empty, the widget uses `MODEL_ROUTER_PORT`, then `4202` |
+| `stateDir` | `""` | The directory that holds `caller-secret`. If it is empty, the widget uses `~/.codex/codex-router` |
+| `sourceRoot` | `""` | The checkout of the router for the control CLI. If it is empty, the widget uses `~/.local/share/codex-router` |
+| `accountUsage` | `"Off"` | The ChatGPT quota cards. The upstream call is slow, thus the default is `"Off"` |
 
-## IPC
+## Commands
 
 ```sh
 omarchy-shell shell summon kzagoris.codex-router-tray '{}'   # open
@@ -110,50 +177,92 @@ omarchy-shell shell toggle kzagoris.codex-router-tray
 omarchy-shell kzagoris.codex-router-tray refresh             # re-poll now
 ```
 
-With the panel focused, `R` refreshes, Escape closes, Tab switches panels.
+Put the focus on the panel. Then push `R` to refresh the data, Escape to
+close the panel, or Tab to move to the next panel.
 
 ## How it works
 
-- `GET http://127.0.0.1:<port>/health` — unauthenticated, cheap, drives dot +
-  hero + activity.
-- `POST /_codex-router/<caller-secret>/panel/invoke` — the same bridge the
-  router's browser panel injects, restricted to the read-only allowlist
-  (`control_snapshot`, `account_usage`, `provider_usage`, `provider_setup`,
-  `local_models`). The caller secret is read once into memory and never
-  logged, stored, or echoed; URLs containing it are redacted.
-- Mutations run the router's own CLI (`src/control.mjs` with
-  `MODEL_ROUTER_TARGET=codex`), serialized with busy/error feedback, each
-  followed by a fresh read ("mutate, then re-read").
+- `GET http://127.0.0.1:<port>/health` needs no authentication and is cheap.
+  It drives the dot, the hero line, and the activity.
+- `POST /_codex-router/<caller-secret>/panel/invoke` is the same bridge that
+  the browser panel of the router injects. The widget uses only the read-only
+  allowlist: `control_snapshot`, `account_usage`, `provider_usage`,
+  `provider_setup`, and `local_models`.
+- The widget reads the caller secret one time into memory. It never writes
+  the secret to a log or to a file, and it removes the secret from each URL
+  that it shows.
+- Mutations run the control CLI of the router (`src/control.mjs` with
+  `MODEL_ROUTER_TARGET=codex`). The widget runs one command at a time and
+  shows a busy label or an error. After each command, it reads the data
+  again.
+- The model toggles queue behind the same runner. Repeated intents for one
+  model become one command. When the queue is empty, the view reconciles
+  against one read. The bulk commands operate on the full list or on one
+  provider.
 
-All traffic is loopback-only. No credentials ever flow through the plugin.
+All the traffic stays on the loopback interface. No credential goes through
+the plugin.
 
-## Troubleshooting
+## Problems and fixes
 
-| Symptom | Fix |
+| Problem | Fix |
 |---|---|
-| Gray dot, "Router offline" | `systemctl --user start codex-router` |
-| "Caller key missing or unreadable" | `./bin/doctor --fix` in the router checkout |
-| Toggles/buttons error | Check Node is on PATH and `sourceRoot` points at the router checkout |
-| Widget missing from the gallery | `omarchy plugin list --json \| jq '.[] \| select(.id=="kzagoris.codex-router-tray")'` |
-| QML errors in the journal | `qs log -p "$OMARCHY_PATH/shell" --tail 100` |
+| The dot is gray and the panel shows "Router offline" | `systemctl --user start codex-router` |
+| The panel shows "Caller key missing or unreadable" | Run `./bin/doctor --fix` in the checkout of the router |
+| A toggle or a button gives an error | Make sure that Node is on the PATH and that `sourceRoot` points to the checkout of the router |
+| The widget is absent from the gallery | `omarchy plugin list --json \| jq '.[] \| select(.id=="kzagoris.codex-router-tray")'` |
+| The journal shows QML errors | `qs log -p "$OMARCHY_PATH/shell" --tail 100` |
 
 ## Development
 
-Work on a clone in your plugins directory and validate it in place:
+Work on a clone in your plugins directory. Then examine it in that location:
 
 ```sh
 omarchy plugin validate ~/.config/omarchy/plugins/kzagoris.codex-router-tray
 qs log -p "$OMARCHY_PATH/shell" --tail 100   # QML errors
 ```
 
-Body edits inside an already-compiling QML file hot-reload on save; import or
-new-file changes need `omarchy restart shell`.
+A change in the body of a QML file that compiles reloads when you save the
+file. A change to an import, or a new file, needs `omarchy restart shell`.
 
-## Out of scope, on purpose
+## Changelog
 
-- macOS-style Dynamic Island overlay (Linux tray has no island either)
-- Local model pull/install flows with progress streaming (link out to the web panel)
-- i18n — English only
+### 0.2.0
+
+- **The Models view.** It shows each model in the catalog that an enabled
+  provider gives, in groups by provider. A sub-switcher selects the picker
+  visibility or the subagent eligibility. The view has proof badges, the
+  interlock between the two settings, and the bulk commands.
+- **The panel became a switcher over four views.** Status, Usage, Providers,
+  and Models share one hero line, one status box, and one footer. The shell
+  keeps the selected view for the session.
+- **Optimistic toggles.** A click changes the toggle immediately. Repeated
+  clicks on one model become one command. A failure puts the toggle back with
+  the message from the router. The view then reconciles against one read.
+- **Correct release of the automatic refresh.** Each exit from the mutation
+  runner releases it, and this includes the abort when the router is off. A
+  toggle whose read is still in transit stays when you leave the view.
+- **The compaction of old tool results** moved into the modes in the Status
+  view, where a routing mode belongs.
+- The control CLI wrapper accepts a slug with a provider, for example
+  `opencode-free/big-pickle`.
+- A test harness with no dependencies (the test runner of Node) examines the
+  pure logic modules. Captured router snapshots feed the tests. A change to a
+  payload thus makes a test fail, not the panel.
+
+### 0.1.0
+
+The first public release. It has the bar pill with the live health dot. Its
+panel has the modes, the activity, the usage, and the provider controls. The
+panel also has the maintenance commands and the link to the web panel.
+
+## Not included, on purpose
+
+- An overlay in the style of the macOS Dynamic Island. The Linux tray has no
+  island.
+- Flows that install a local model and show the progress. The web panel does
+  this.
+- Other languages. The plugin is in English only.
 
 ## License
 
