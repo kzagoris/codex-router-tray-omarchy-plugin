@@ -105,7 +105,10 @@ Item {
     if (!root.health) return false
     return Array.isArray(root.health.degraded) && root.health.degraded.length > 0
   }
-  readonly property var degradedNames: root.health && Array.isArray(root.health.degraded) ? root.health.degraded : []
+  readonly property var degradedNames: {
+    if (!root.health || !Array.isArray(root.health.degraded)) return []
+    return root.health.degraded.map(function(name) { return root.plainText(name, 48) })
+  }
 
   readonly property int activeCount: Number(activity.activeCount) || 0
   readonly property var activeRequests: Array.isArray(activity.active) ? activity.active : []
@@ -118,7 +121,25 @@ Item {
   property string lastProviderName: ""
   readonly property string providerName: root.online ? lastProviderName : ""
 
-  readonly property string version: root.health ? String(health.version || "") : ""
+  readonly property string version: root.health ? root.plainText(health.version, 32) : ""
+
+  // Everything the router says eventually lands in a Text item or in the
+  // shell's shared tooltip, and neither should interpret it as markup: Qt's
+  // default AutoText sniffs strings for rich text, so a provider name
+  // carrying tags could draw into the bar or reference an external <img>
+  // source. Text items in this plugin pin textFormat to PlainText; the
+  // tooltip belongs to the shell, so router-derived values are stripped
+  // here instead -- markup characters dropped, control characters and
+  // newlines flattened, and the length clamped so an enormous string cannot
+  // stretch a bar slot.
+  function plainText(value, max) {
+    var text = String(value === undefined || value === null ? "" : value)
+    text = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    text = text.replace(/[<>&]/g, "")
+    text = text.replace(/\s+/g, " ").trim()
+    var limit = max > 0 ? max : 120
+    return text.length > limit ? text.slice(0, limit - 1) + "…" : text
+  }
 
   // ------------------------------------------------------- caller secret
 
@@ -147,6 +168,12 @@ Item {
 
   property var _inFlight: null
 
+  // Response ceilings. /health is a fixed-shape status blob measured in
+  // hundreds of bytes; the authenticated commands carry usage tables and
+  // model lists, so they get room to grow without going unbounded.
+  readonly property int _healthMaxChars: 256 * 1024
+  readonly property int _invokeMaxChars: 4 * 1024 * 1024
+
   function pollHealth() {
     // Skip, don't abort: a response that is merely slower than the interval
     // is still a healthy answer, and dropping it would report "offline"
@@ -156,12 +183,25 @@ Item {
     if (_inFlight) return
 
     var xhr = new XMLHttpRequest()
-    var entry = _track(xhr, Math.max(2000, Math.max(2, root.healthIntervalSec) * 1000 - 250))
+    var entry = _track(xhr,
+      Math.max(2000, Math.max(2, root.healthIntervalSec) * 1000 - 250),
+      root._healthMaxChars)
     _inFlight = xhr
     xhr.onreadystatechange = function() {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED
+          || xhr.readyState === XMLHttpRequest.LOADING) {
+        // The abort lands back here as DONE with status 0, which applyHealth
+        // already reads as "not trusting stale data".
+        root._overLimit(xhr, entry)
+        return
+      }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
       if (_inFlight === xhr) _inFlight = null
       _untrack(entry)
+      if (entry.oversize) {
+        root.health = null
+        return
+      }
       applyHealth(xhr.status, xhr.responseText)
     }
     xhr.open("GET", "http://127.0.0.1:" + root.port + "/health")
@@ -179,7 +219,7 @@ Item {
       var parsed = JSON.parse(String(text))
       root.health = parsed && typeof parsed === "object" ? parsed : null
       if (root.online) {
-        var live = String(root.activity.provider || "")
+        var live = root.plainText(root.activity.provider, 48)
         if (live !== "") root.lastProviderName = live
       }
     } catch (e) {
@@ -201,10 +241,43 @@ Item {
   property var _tracked: []
   readonly property int _trackedCount: _tracked.length
 
-  function _track(request, budgetMs) {
-    var entry = { request: request, deadline: Date.now() + budgetMs, timedOut: false }
+  function _track(request, budgetMs, maxChars) {
+    var entry = {
+      request: request,
+      deadline: Date.now() + budgetMs,
+      timedOut: false,
+      maxChars: maxChars,
+      oversize: false
+    }
     _tracked = _tracked.concat([entry])
     return entry
+  }
+
+  // A loopback service that answers with an endless body would otherwise be
+  // buffered whole and handed to JSON.parse, so a compromised router could
+  // pin arbitrary memory in a shell that never restarts. Every tracked
+  // request carries a size budget checked while the body streams: once the
+  // declared or received length passes it the request is aborted, so nothing
+  // larger is ever retained, let alone parsed.
+  //
+  // Measured in UTF-16 code units rather than bytes -- QML exposes no byte
+  // count, and the budgets are order-of-magnitude limits, not accounting.
+  function _overLimit(request, entry) {
+    if (entry.oversize) return true
+
+    var size = -1
+    if (request.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+      var declared = parseInt(request.getResponseHeader("Content-Length") || "", 10)
+      if (isFinite(declared) && declared >= 0) size = declared
+    }
+    if (size < 0) size = String(request.responseText || "").length
+    if (size <= entry.maxChars) return false
+
+    entry.oversize = true
+    _untrack(entry)
+    try { request.abort() } catch (e) { /* already gone */ }
+    console.warn("codex-router-tray", "Oversized router response aborted at", size, "chars")
+    return true
   }
 
   function _untrack(entry) {
@@ -255,14 +328,26 @@ Item {
     var request = new XMLHttpRequest()
     // account_usage proxies a slow upstream call; everything else answers
     // locally and quickly.
-    var entry = _track(request, command === "account_usage" ? 30000 : 15000)
+    var entry = _track(request,
+      command === "account_usage" ? 30000 : 15000,
+      root._invokeMaxChars)
     var settled = false
 
     request.onreadystatechange = function() {
+      if (request.readyState === XMLHttpRequest.HEADERS_RECEIVED
+          || request.readyState === XMLHttpRequest.LOADING) {
+        root._overLimit(request, entry)
+        return
+      }
       if (request.readyState !== XMLHttpRequest.DONE) return
       if (settled) return
       settled = true
       _untrack(entry)
+
+      if (entry.oversize) {
+        if (onDone) onDone(null, "Router sent an oversized response.")
+        return
+      }
 
       if (entry.timedOut) {
         if (onDone) onDone(null, "Router did not answer in time.")

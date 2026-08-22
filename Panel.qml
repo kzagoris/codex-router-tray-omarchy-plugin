@@ -403,6 +403,7 @@ Panel {
                 height: Style.font.display
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: "󰒋"
                   color: root.foreground
@@ -423,6 +424,7 @@ Panel {
             radius: Style.cornerRadius
 
             Text {
+              textFormat: Text.PlainText
               id: statusText
               anchors.left: parent.left
               anchors.right: parent.right
@@ -501,6 +503,7 @@ Panel {
 
             // Idle collapses to one honest line; traffic lists itself.
             Text {
+              textFormat: Text.PlainText
               visible: root.service && root.service.activeCount === 0
               width: parent.width
               text: {
@@ -537,6 +540,7 @@ Panel {
                   implicitHeight: requestProvider.implicitHeight
 
                   Text {
+                    textFormat: Text.PlainText
                     id: requestProvider
                     text: requestRow.modelData ? String(requestRow.modelData.provider || "request") : ""
                     color: root.foreground
@@ -550,6 +554,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     id: requestElapsed
                     text: {
                       var startedAt = requestRow.modelData ? Number(requestRow.modelData.startedAt) : 0
@@ -563,6 +568,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   visible: text !== ""
                   width: parent.width
                   text: {
@@ -596,6 +602,7 @@ Panel {
             // Waiting for the very first payload of a session reads better
             // than an empty frame that flickers in a moment later.
             Text {
+              textFormat: Text.PlainText
               visible: root.service && root.service.dataLoading && !root.selectedProvider
                 && root.quotaCards.length === 0
               width: parent.width
@@ -608,6 +615,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.service && !root.service.dataLoading
                 && root.trafficProviders.length === 0 && root.quotaCards.length === 0
               width: parent.width
@@ -679,6 +687,7 @@ Panel {
                     implicitHeight: quotaLabel.implicitHeight
 
                     Text {
+                      textFormat: Text.PlainText
                       id: quotaLabel
                       text: quotaRow.modelData.label + " · " + quotaRow.modelData.providerName
                       color: root.foreground
@@ -691,6 +700,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       id: quotaValue
                       text: quotaRow.modelData.usedPercent !== null
                         ? Math.round(quotaRow.modelData.usedPercent) + "% used" : "—"
@@ -708,6 +718,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     visible: text !== ""
                     width: parent.width
                     // §4 asks for a live countdown; keep the absolute time
@@ -726,6 +737,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: root.quotaUnavailable && root.quotaCards.length === 0
                 width: parent.width
                 text: "ChatGPT quota unavailable — the upstream call timed out."
@@ -955,6 +967,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: text !== ""
             width: parent.width
             text: root.updatedCaption()
@@ -1019,6 +1032,7 @@ Panel {
     implicitHeight: Math.max(dayLabel.implicitHeight, dayValue.implicitHeight) + Style.spacing.sm
 
     Text {
+      textFormat: Text.PlainText
       id: dayLabel
       text: dayRow.day ? String(dayRow.day.label) : ""
       color: dayRow.today ? root.foreground : root.dim
@@ -1056,6 +1070,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: dayValue
       text: dayRow.day ? Model.compactTokens(dayRow.day.tokens) : ""
       color: dayRow.today ? root.foreground : root.dim
@@ -1114,6 +1129,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: nameLabel
       text: modelRow.name
       color: root.foreground
@@ -1128,6 +1144,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: tokensLabel
       text: modelRow.tokens
       color: root.dim
@@ -1210,6 +1227,7 @@ Panel {
             : root.alpha(root.foreground, 0.05)
 
           Text {
+            textFormat: Text.PlainText
             id: provPillText
             anchors.centerIn: parent
             text: prow.configured ? "CONFIGURED" : "NOT SET UP"
@@ -1220,6 +1238,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           id: provName
           text: prow.provider ? String(prow.provider.name) : ""
           color: root.foreground
@@ -1235,6 +1254,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: prow.detail
         color: root.dim
@@ -1280,6 +1300,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         id: provNone
         visible: !prow.configured && prow.cta === ""
         anchors.right: parent.right

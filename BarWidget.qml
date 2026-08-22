@@ -112,7 +112,10 @@ BarWidget {
     if (router.routerState === "generating")
       return "Codex Router — generating (" + router.activeCount + " active)"
     if (router.routerState === "error") {
-      var names = router.degradedNames.join(", ")
+      // Each name is already stripped at the source; the joined list still
+      // needs a ceiling so a router reporting hundreds of degraded providers
+      // cannot hand the shell's tooltip an unbounded string.
+      var names = router.plainText(router.degradedNames.join(", "), 200)
       var base = names !== "" ? "Codex Router — degraded: " + names : "Codex Router — error"
       return router.activeCount > 0 ? base + " (" + router.activeCount + " active)" : base
     }
@@ -245,6 +248,7 @@ BarWidget {
       }
 
       Text {
+        textFormat: Text.PlainText
         id: trailingLabel
         visible: root.labelVisible
         text: root.labelText
@@ -267,6 +271,7 @@ BarWidget {
       }
 
       Text {
+        textFormat: Text.PlainText
         visible: root.verticalNameLine
         width: parent.width
         height: Style.bar.iconSlot
@@ -294,6 +299,7 @@ BarWidget {
     onPulsingChanged: if (!pulsing) statusDot.opacity = 1
 
     Text {
+      textFormat: Text.PlainText
       id: glyph
       anchors.centerIn: parent
       text: root.routerGlyph
