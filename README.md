@@ -32,15 +32,21 @@ the clock:
 
 <img src="docs/screenshots/bar-vertical.webp" alt="Vertical bar widget" width="135">
 
-**Panel** (left click) — one scrolling column, agents-style:
+**Panel** (left click) — a switcher over four views, with the hero, status
+box and footer visible in every view (the panel deviates from the
+first-party single-column idiom on purpose; see ADR 0001 in the dev repo):
+
+- **Status** — modes (login-free, signed routing), live activity, maintenance actions
+- **Usage** — per-provider tokens by day (7-day bars) and by provider (share rows); optional ChatGPT quota cards
+- **Providers** — every catalog provider with configured badge and enable/disable toggle; "Add key" / "Sign in" hand off to the router's own web panel
+- **Models** — placeholder; catalog-model controls arrive with v0.2.0
+
+The selected view is session-scoped: it survives a close/open round-trip and
+resets when the shell restarts.
 
 - **Hero** — live state line (`RUNNING · V0.4.0-BETA.4`, `GENERATING · 2 ACTIVE`, `OFFLINE`, `DEGRADED: …`)
 - **Status box** — honest guidance when something is wrong (offline, caller key missing, degraded providers)
-- **Modes** — login-free mode and signed routing toggles
-- **Activity** — active provider/model/session and concurrent requests with elapsed time
-- **Usage** — per-provider tokens by day (7-day bars) and by provider (share rows); optional ChatGPT quota cards
-- **Providers** — every catalog provider with configured badge and enable/disable toggle; "Add key" / "Sign in" hand off to the router's own web panel
-- **Maintenance** — restart service, update, `doctor --fix`, open web panel, refresh
+- **Footer** — manual refresh and the last-updated stamp
 
 <p align="center">
   <img src="docs/screenshots/panel-providers.webp" alt="Panel — providers and maintenance" width="380">

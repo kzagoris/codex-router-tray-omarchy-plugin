@@ -3,18 +3,30 @@ import QtQuick.Controls
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "views"
 
 // Codex Router popup panel, anchored to the bar button.
 //
-// Full surface: live state hero, guidance/status box, mode switches,
-// request activity, per-provider token usage, the provider catalog with
-// enable toggles, and maintenance actions. Reads go through the same command
-// bridge the router's browser panel uses; mutations shell out to the
-// router's control CLI via the shared RouterService.
+// Chrome plus a segmented switcher over four mutually exclusive views —
+// Status, Usage, Providers, Models (see views/) — so the panel stops being
+// one scrolling column and its height stops growing with the feature set.
+// Chrome sits outside the switcher: hero, auth/offline status box and
+// footer caption render in every view, because the status box is what
+// explains an empty view and must never be reachable from only one.
 //
-// Visual vocabulary follows omarchy.agents: fills are alpha steps of
-// foreground so the panel is theme-proof, alarm color only ever comes from
-// `urgent`, and the shared Panel* components carry the chrome.
+// This file owns no section content anymore. It keeps the palette, the
+// open/close contract, the anchoring, the Flickable, and the mutation
+// coordinator (actionDomain/activeControlKey): busy and error notices must
+// follow the control that started them across views.
+//
+// The selected view is session-scoped state held here — a close/open
+// round-trip returns to where you were, a shell restart opens on Status.
+// Deliberately not a manifest setting: not something an operator
+// configures.
+//
+// Deviating from the first-party single-column panel idiom is deliberate;
+// docs/adr/0001-panel-is-a-view-switcher.md records why — read it before
+// "fixing" the deviation against panels/network.
 Panel {
   id: root
   moduleName: "kzagoris.codex-router-tray"
@@ -47,11 +59,19 @@ Panel {
     return Qt.rgba(c.r, c.g, c.b, a)
   }
 
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
-
   // Countdowns and elapsed times read this instead of Date.now() so the
   // panel keeps telling the truth while it sits open.
   property double nowMs: Date.now()
+
+  // ------------------------------------------------------ view switcher
+
+  readonly property var viewTabs: ["Status", "Usage", "Providers", "Models"]
+
+  // Session-scoped: survives a close/open round-trip, resets when the shell
+  // restarts (this object is rebuilt then).
+  property int selectedView: 0
+
+  onSelectedViewChanged: if (panelFlick) panelFlick.contentY = 0
 
   // ---- Open/close. Overridden (not inherited) so a hotkey summon suppresses
   //      the bar's center hover reveal: summoning moves no pointer, and the
@@ -114,7 +134,7 @@ Panel {
     }
   }
 
-  // --------------------------------------------------------- derived state
+  // --------------------------------------------------------- chrome state
 
   // Hero meta line, uppercase small-caps like agents' plan labels.
   function heroMeta() {
@@ -143,163 +163,12 @@ Panel {
     return ""
   }
 
-  // Providers that have actually carried traffic — the usage switch would
-  // be unusable with all thirty-plus catalog entries on it.
-  readonly property var trafficProviders: {
-    var out = []
-    var usage = service ? service.providerUsage : null
-    var list = usage && Array.isArray(usage.providers) ? usage.providers : []
-    for (var i = 0; i < list.length; i++) {
-      var p = list[i]
-      if (!p) continue
-      var total = Number(p.totalTokens) || 0
-      var requests = Number(p.requests) || 0
-      if (total <= 0 && requests <= 0) continue
-      out.push({
-        id: String(p.id || ""),
-        name: String(p.displayName || p.id || "unknown"),
-        total: total,
-        requests: requests,
-        last24h: Number(p.last24hTokens) || 0,
-        last24hRequests: Number(p.last24hRequests) || 0,
-        buckets: Array.isArray(p.dailyUsageBuckets) ? p.dailyUsageBuckets : []
-      })
-    }
-    out.sort(function(a, b) { return b.total - a.total })
-    return out
-  }
+  // ------------------------------------------------ mutation coordinator
 
-  // Selection follows the provider id, not its slot: a fresh payload that
-  // reshuffles the order must not swap what you were reading.
-  property string selectedProviderId: ""
-  readonly property int trafficIndex: {
-    for (var i = 0; i < trafficProviders.length; i++)
-      if (trafficProviders[i].id === selectedProviderId) return i
-    return 0
-  }
-  readonly property var selectedProvider: trafficProviders.length > 0
-    ? trafficProviders[trafficIndex] : null
-
-  onTrafficIndexChanged: if (panelFlick) panelFlick.contentY = 0
-
-  // The local calendar day, as a string. daySeries and the Today row key
-  // off this rather than raw nowMs: a per-second Date would rebuild the
-  // series (and with it every DayRow) each tick, dropping hover states and
-  // width animations for nothing — the value only moves at midnight.
-  readonly property string todayKey: Model.localDateKey(new Date(nowMs))
-
-  readonly property var daySeries: selectedProvider
-    ? Model.dailySeries(selectedProvider.buckets, 7, new Date(todayKey + "T12:00:00"))
-    : []
-
-  function dayRequests(dateKey) {
-    if (!selectedProvider) return 0
-    return Model.bucketValue(selectedProvider.buckets, dateKey, "requests")
-  }
-
-  readonly property real dayPeak: {
-    var peak = 1
-    for (var i = 0; i < daySeries.length; i++) peak = Math.max(peak, daySeries[i].tokens)
-    return peak
-  }
-
-  function dayTooltip(day) {
-    if (!day) return ""
-    var text = day.longLabel + " · " + Model.exactTokens(day.tokens) + " tokens"
-    var requests = dayRequests(day.key)
-    if (requests > 0) text += " · " + requests + " requests"
-    return text
-  }
-
-  // Quota windows come from the slow account call plus whatever the usage
-  // payload carries locally; both sources dedupe inside buildQuotaCards.
-  readonly property var quotaCards: (service && service.accountUsageEnabled && service.accountUsage)
-    ? Model.buildQuotaCards({
-        account: service.accountUsage,
-        providerUsage: service.providerUsage,
-        providerSetup: service.providerSetup
-      })
-    : []
-
-  readonly property bool quotaUnavailable: !!service && service.accountUsageEnabled
-    && !service.accountUsage && service.accountUsageFailed
-
-  // ------------------------------------------------------------- controls
-
-  // The codex target block of the snapshot — everything the mode switches
-  // and provider toggles reflect. Empty object until the first read lands.
-  readonly property var codexTarget: {
-    var targets = service && service.snapshot && service.snapshot.targets
-      ? service.snapshot.targets : null
-    return targets && targets.codex ? targets.codex : {}
-  }
-  readonly property bool loginFree: root.codexTarget.loginFree === true
-  readonly property bool signedRouting: root.codexTarget.signedRouting === true
-  readonly property var enabledProviderIds: Array.isArray(root.codexTarget.enabledProviders)
-    ? root.codexTarget.enabledProviders : []
-
-  function providerIsEnabled(id) {
-    return root.enabledProviderIds.indexOf(String(id)) >= 0
-  }
-
-  // Every catalog provider from provider_setup, configured ones first so the
-  // rows that can actually be flipped sit at the top; alphabetical inside
-  // each group. Enabled state comes from the snapshot's enabledProviders,
-  // not from the setup payload.
-  readonly property var setupProviders: {
-    var setup = service ? service.providerSetup : null
-    var list = setup && Array.isArray(setup.providers) ? setup.providers : []
-    var out = []
-    for (var i = 0; i < list.length; i++) {
-      var p = list[i]
-      if (!p || String(p.id || "") === "") continue
-      out.push({
-        id: String(p.id),
-        name: String(p.displayName || p.id),
-        kind: String(p.kind || "api"),
-        configured: p.configured === true,
-        action: String(p.action || ""),
-        credentialLabel: String(p.credentialLabel || ""),
-        planNote: String(p.planNote || "")
-      })
-    }
-    out.sort(function(a, b) {
-      if (a.configured !== b.configured) return a.configured ? -1 : 1
-      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
-    })
-    return out
-  }
-
-  function providerKindLabel(p) {
-    if (!p) return ""
-    if (p.kind === "oauth") return "OAuth sign-in"
-    if (p.kind === "anonymous") return "No API key"
-    if (p.kind === "per-model") return "Per-model endpoints"
-    return p.credentialLabel !== "" ? p.credentialLabel : "API key"
-  }
-
-  // Label for the affordance on unconfigured rows. Credentials are
-  // deliberately never typed into the plugin — every one of these opens the
-  // router's own web panel instead (PLAN.md §4).
-  function providerCta(p) {
-    if (!p || p.configured || p.kind === "anonymous") return ""
-    if (p.kind === "oauth") return "Sign in"
-    if (p.action === "install") return "Set up"
-    return "Add key"
-  }
-
-  // True while nothing user-facing should accept clicks: the router is
-  // unreachable or a mutation is already running. Service start is the one
-  // action exempt by design (see runAction).
-  readonly property bool actionsLocked: !service || !service.online || service.mutationRunning
-
-  // One guard for every section that needs live, authenticated data.
-  readonly property bool controlsReachable: !!service && service.online
-    && service.hasCallerSecret
-
-  // Which section owns the running/last-failed action, so busy and error
-  // notices render next to the control that started them rather than in a
-  // far corner of a scrolling column.
+  // Which section-domain owns the running/last-failed action, so busy and
+  // error notices render next to the control that started them rather than
+  // in a far corner of whichever view happens to be open. Views hand their
+  // clicks here (StatusView, ProvidersView).
   property string actionDomain: ""
   // Which exact control started it, so its own button can swap to a busy
   // label while the rest of the panel merely disables.
@@ -317,14 +186,6 @@ Panel {
     })
   }
 
-  function toggleProvider(p) {
-    if (!p || !p.configured) return
-    var enabling = !root.providerIsEnabled(p.id)
-    root.runAction("providers", "provider:" + p.id,
-      (enabling ? "Enabling " : "Disabling ") + p.name,
-      ["set-apply", p.id, enabling ? "on" : "off", "--targets", "codex", "--activate"])
-  }
-
   // Busy line while this domain's mutation runs, its error afterwards;
   // empty when the domain is uninvolved.
   function domainNotice(domain) {
@@ -334,17 +195,6 @@ Panel {
   }
 
   // ---------------------------------------------------------------- misc
-
-  function formatElapsed(ms) {
-    var seconds = Math.max(0, Math.floor(ms / 1000))
-    if (seconds < 60) return seconds + "s"
-    var minutes = Math.floor(seconds / 60)
-    seconds %= 60
-    if (minutes < 60) return minutes + "m " + Model.pad2(seconds) + "s"
-    var hours = Math.floor(minutes / 60)
-    minutes %= 60
-    return hours + "h " + Model.pad2(minutes) + "m"
-  }
 
   function updatedCaption() {
     if (!service || service.lastUpdatedAt <= 0) return ""
@@ -371,8 +221,8 @@ Panel {
       onTextKey: function(t) { if (t === "r" || t === "R") root.refreshNow() }
 
       // KeyboardPanel paints a card sized to contentWidth on a full-screen
-      // surface; the Flickable is what keeps column measured against the
-      // *card*, never the screen.
+      // surface; the Flickable is what keeps the column measured against
+      // the *card*, never the screen.
       Flickable {
         id: panelFlick
         anchors.fill: parent
@@ -388,6 +238,36 @@ Panel {
           id: column
           width: panelFlick.width
           spacing: Style.space(12)
+
+          // ---------- View switcher ----------
+          // Names the four views; equal-width cells so a click never
+          // resizes the popup under the cursor.
+          Row {
+            width: parent.width
+            spacing: Style.spacing.sm
+
+            readonly property real cellWidth: (width - spacing * (root.viewTabs.length - 1))
+              / Math.max(1, root.viewTabs.length)
+
+            Repeater {
+              model: root.viewTabs
+
+              Button {
+                required property var modelData
+                required property int index
+
+                width: parent.cellWidth
+                text: modelData
+                selected: index === root.selectedView
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                verticalPadding: Style.spacing.controlPaddingY
+                onClicked: root.selectedView = index
+              }
+            }
+          }
 
           // ---------- Hero: mark · name · live state ----------
           PanelHero {
@@ -414,7 +294,7 @@ Panel {
             }
           }
 
-          // ---------- Status / guidance ----------
+          // ---------- Status / guidance (chrome: every view) ----------
           BorderSurface {
             visible: root.statusMessage !== ""
             width: parent.width
@@ -439,520 +319,56 @@ Panel {
             }
           }
 
-          // ---------- Mode switches ----------
-          Column {
-            id: modesSection
-            // The toggles mirror snapshot state; without a first read they
-            // would show "off" as if it were the truth.
-            visible: root.controlsReachable && !!root.service.snapshot
+          // ---------- The active view ----------
+          StatusView {
+            visible: root.selectedView === 0
             width: parent.width
-            spacing: Style.spacing.md
-
-            PanelSectionHeader {
-              width: parent.width
-              text: "MODES"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Toggle {
-              width: parent.width
-              label: "Login-free mode"
-              description: "Route Codex without a ChatGPT sign-in."
-              checked: root.loginFree
-              foreground: root.foreground
-              accent: Color.accent
-              fontFamily: root.fontFamily
-              opacity: root.actionsLocked ? 0.55 : 1
-              onClicked: root.runAction("modes", "login-free", "Switching login-free mode",
-                ["auth-mode", root.loginFree ? "off" : "on"])
-            }
-
-            Toggle {
-              width: parent.width
-              label: "Signed routing"
-              description: "Sign routed requests so upstream responses verify."
-              checked: root.signedRouting
-              foreground: root.foreground
-              accent: Color.accent
-              fontFamily: root.fontFamily
-              opacity: root.actionsLocked ? 0.55 : 1
-              onClicked: root.runAction("modes", "signed-routing", "Switching signed routing",
-                ["signed-routing", root.signedRouting ? "off" : "on"])
-            }
-
-            ActionNotice {
-              width: parent.width
-              domain: "modes"
-            }
-          }
-
-          // ---------- Activity ----------
-          Column {
-            id: activitySection
-            visible: !!root.service && root.service.online
-            width: parent.width
-            spacing: Style.spacing.md
-
-            PanelSectionHeader {
-              width: parent.width
-              text: "ACTIVITY"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            // Idle collapses to one honest line; traffic lists itself.
-            Text {
-              textFormat: Text.PlainText
-              visible: root.service && root.service.activeCount === 0
-              width: parent.width
-              text: {
-                var provider = root.service ? root.service.lastProviderName : ""
-                return provider !== ""
-                  ? "Idle — last routed via " + provider
-                  : "Idle — no routed requests yet."
-              }
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              elide: Text.ElideRight
-            }
-
-            Repeater {
-              model: root.service ? root.service.activeRequests : []
-
-              Column {
-                id: requestRow
-                required property var modelData
-                width: parent.width
-                spacing: Style.space(2)
-
-                readonly property bool stale: !modelData
-
-                Rectangle {
-                  width: parent.width
-                  height: 1
-                  color: requestRow.stale ? "transparent" : root.alpha(root.foreground, 0.06)
-                }
-
-                Item {
-                  width: parent.width
-                  implicitHeight: requestProvider.implicitHeight
-
-                  Text {
-                    textFormat: Text.PlainText
-                    id: requestProvider
-                    text: requestRow.modelData ? String(requestRow.modelData.provider || "request") : ""
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    font.bold: true
-                    elide: Text.ElideRight
-                    anchors.left: parent.left
-                    anchors.right: requestElapsed.left
-                    anchors.rightMargin: Style.space(8)
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    id: requestElapsed
-                    text: {
-                      var startedAt = requestRow.modelData ? Number(requestRow.modelData.startedAt) : 0
-                      return startedAt > 0 ? root.formatElapsed(root.nowMs - startedAt) : ""
-                    }
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    anchors.right: parent.right
-                  }
-                }
-
-                Text {
-                  textFormat: Text.PlainText
-                  visible: text !== ""
-                  width: parent.width
-                  text: {
-                    if (!requestRow.modelData) return ""
-                    var model = String(requestRow.modelData.model || "")
-                    var session = String(requestRow.modelData.sessionName || "")
-                    if (model !== "" && session !== "") return model + " · " + session
-                    return model !== "" ? model : session
-                  }
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-              }
-            }
-          }
-
-          // ---------- Usage ----------
-          PanelSeparator {
-            visible: usageSection.visible
+            service: root.service
+            panel: root
+            nowMs: root.nowMs
             foreground: root.foreground
+            urgent: root.urgent
+            dim: root.dim
+            fontFamily: root.fontFamily
           }
 
-          Column {
-            id: usageSection
-            visible: root.controlsReachable
+          UsageView {
+            visible: root.selectedView === 1
             width: parent.width
-            spacing: Style.spacing.md
-
-            // Waiting for the very first payload of a session reads better
-            // than an empty frame that flickers in a moment later.
-            Text {
-              textFormat: Text.PlainText
-              visible: root.service && root.service.dataLoading && !root.selectedProvider
-                && root.quotaCards.length === 0
-              width: parent.width
-              topPadding: Style.space(6)
-              text: "Reading router state…"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              horizontalAlignment: Text.AlignHCenter
-            }
-
-            Text {
-              textFormat: Text.PlainText
-              visible: root.service && !root.service.dataLoading
-                && root.trafficProviders.length === 0 && root.quotaCards.length === 0
-              width: parent.width
-              topPadding: Style.space(6)
-              text: "Router online — no routed traffic yet.\nUsage shows up after the first request."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              horizontalAlignment: Text.AlignHCenter
-              wrapMode: Text.WordWrap
-            }
-
-            // ---------- Provider switch ----------
-            Row {
-              visible: root.trafficProviders.length > 1
-              width: parent.width
-              spacing: Style.spacing.sm
-
-              readonly property real cellWidth: (width - spacing * (root.trafficProviders.length - 1))
-                / Math.max(1, root.trafficProviders.length)
-
-              Repeater {
-                model: root.trafficProviders
-
-                Button {
-                  required property var modelData
-                  required property int index
-
-                  width: parent.cellWidth
-                  text: modelData.name
-                  selected: index === root.trafficIndex
-                  bordered: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.bodySmall
-                  verticalPadding: Style.spacing.controlPaddingY
-                  onClicked: root.selectedProviderId = modelData.id
-                }
-              }
-            }
-
-            // ---------- Quota (only when the user opted in) ----------
-            Column {
-              visible: root.quotaCards.length > 0 || root.quotaUnavailable
-              width: parent.width
-              spacing: Style.space(10)
-
-              PanelSectionHeader {
-                width: parent.width
-                text: "LIMITS"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: root.quotaCards
-
-                Column {
-                  id: quotaRow
-                  required property var modelData
-                  width: parent.width
-                  spacing: Style.space(6)
-
-                  readonly property bool alarming: modelData.usedPercent !== null
-                    && modelData.usedPercent >= 90
-
-                  Item {
-                    width: parent.width
-                    implicitHeight: quotaLabel.implicitHeight
-
-                    Text {
-                      textFormat: Text.PlainText
-                      id: quotaLabel
-                      text: quotaRow.modelData.label + " · " + quotaRow.modelData.providerName
-                      color: root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.body
-                      elide: Text.ElideRight
-                      anchors.left: parent.left
-                      anchors.right: quotaValue.left
-                      anchors.rightMargin: Style.spacing.sm
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      id: quotaValue
-                      text: quotaRow.modelData.usedPercent !== null
-                        ? Math.round(quotaRow.modelData.usedPercent) + "% used" : "—"
-                      color: quotaRow.alarming ? root.urgent : root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      anchors.right: parent.right
-                    }
-                  }
-
-                  Meter {
-                    width: parent.width
-                    value: quotaRow.modelData.usedPercent !== null ? quotaRow.modelData.usedPercent / 100 : -1
-                    alarming: quotaRow.alarming
-                  }
-
-                  Text {
-                    textFormat: Text.PlainText
-                    visible: text !== ""
-                    width: parent.width
-                    // §4 asks for a live countdown; keep the absolute time
-                    // as the fallback when no usable reset stamp arrived.
-                    text: {
-                      if (!quotaRow.modelData.resetAt) return ""
-                      var now = new Date(root.nowMs)
-                      return Model.formatResetIn(quotaRow.modelData.resetAt, now)
-                        || Model.formatReset(quotaRow.modelData.resetAt, now)
-                    }
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                visible: root.quotaUnavailable && root.quotaCards.length === 0
-                width: parent.width
-                text: "ChatGPT quota unavailable — the upstream call timed out."
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
-              }
-            }
-
-            // ---------- Tokens by day ----------
-            Column {
-              visible: root.daySeries.length > 0
-              width: parent.width
-              spacing: Style.space(10)
-
-              PanelSectionHeader {
-                width: parent.width
-                text: "TOKENS BY DAY"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: root.daySeries
-
-                DayRow {
-                  required property var modelData
-                  width: usageSection.width
-                  day: modelData
-                  ratio: modelData.tokens / root.dayPeak
-                  // By date, not by position: a payload generated before
-                  // midnight must not light yesterday as "Today".
-                  today: String(modelData.key) === root.todayKey
-                }
-              }
-            }
-
-            // ---------- Tokens by provider ----------
-            Column {
-              visible: root.trafficProviders.length > 1
-              width: parent.width
-              spacing: Style.spacing.md
-
-              PanelSectionHeader {
-                width: parent.width
-                text: "TOKENS BY PROVIDER"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: root.trafficProviders.slice(0, 8)
-
-                ModelRow {
-                  required property var modelData
-                  width: parent.width
-                  name: modelData.name
-                  tokens: Model.compactTokens(modelData.total)
-                  tooltip: modelData.name + " · " + Model.exactTokens(modelData.total)
-                    + " tokens · " + modelData.requests + " requests"
-                  // Scaled to the heaviest provider, so the top row is always
-                  // full — the same scale-to-peak the day chart uses.
-                  share: root.trafficProviders.length > 0
-                    && root.trafficProviders[0].total > 0
-                    ? modelData.total / root.trafficProviders[0].total : 0
-                }
-              }
-            }
-          }
-
-          // ---------- Providers ----------
-          PanelSeparator {
-            visible: providersSection.visible
+            service: root.service
+            nowMs: root.nowMs
             foreground: root.foreground
+            urgent: root.urgent
+            dim: root.dim
+            track: root.track
+            fontFamily: root.fontFamily
+            // Same reset the old onTrafficIndexChanged performed on the
+            // panel root: reading another provider starts at the top.
+            onScrollToTop: if (panelFlick) panelFlick.contentY = 0
           }
 
-          Column {
-            id: providersSection
-            visible: root.controlsReachable && root.setupProviders.length > 0
+          ProvidersView {
+            visible: root.selectedView === 2
             width: parent.width
-            spacing: Style.spacing.md
-
-            PanelSectionHeader {
-              width: parent.width
-              text: "PROVIDERS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Repeater {
-              model: root.setupProviders
-
-              ProviderRow {
-                required property var modelData
-                width: parent.width
-                provider: modelData
-              }
-            }
-
-            ActionNotice {
-              width: parent.width
-              domain: "providers"
-            }
-          }
-
-          // ---------- Maintenance ----------
-          PanelSeparator {
-            visible: maintenanceSection.visible
+            service: root.service
+            panel: root
             foreground: root.foreground
+            urgent: root.urgent
+            dim: root.dim
+            fontFamily: root.fontFamily
           }
 
-          Column {
-            id: maintenanceSection
-            visible: !!root.service
+          ModelsView {
+            visible: root.selectedView === 3
             width: parent.width
-            spacing: Style.spacing.md
-
-            PanelSectionHeader {
-              width: parent.width
-              text: "MAINTENANCE"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            // Offline, starting the service is the one action that makes
-            // sense — everything else needs a router to talk to.
-            Button {
-              visible: !root.service || !root.service.online
-              width: parent.width
-              readonly property bool mine: root.activeControlKey === "start"
-                && !!root.service && root.service.mutationRunning
-              text: mine ? "Starting…" : "Start service"
-              enabled: !!root.service && !root.service.mutationRunning
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.runAction("maintenance", "start", "Starting service",
-                ["service", "start"])
-            }
-
-            Row {
-              visible: !!root.service && root.service.online
-              width: parent.width
-              spacing: Style.spacing.sm
-
-              readonly property real cellWidth: (width - spacing * 2) / 3
-
-              Button {
-                width: parent.cellWidth
-                readonly property bool mine: root.activeControlKey === "restart"
-                  && !!root.service && root.service.mutationRunning
-                text: mine ? "Restarting…" : "Restart"
-                tooltipText: "Restart the codex-router service"
-                enabled: !root.actionsLocked
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "restart", "Restarting service",
-                  ["service", "restart"])
-              }
-
-              Button {
-                width: parent.cellWidth
-                readonly property bool mine: root.activeControlKey === "update"
-                  && !!root.service && root.service.mutationRunning
-                text: mine ? "Updating…" : "Update"
-                tooltipText: "Run the router's maintenance task"
-                enabled: !root.actionsLocked
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "update", "Running maintenance",
-                  ["maintenance"])
-              }
-
-              Button {
-                width: parent.cellWidth
-                readonly property bool mine: root.activeControlKey === "fix"
-                  && !!root.service && root.service.mutationRunning
-                text: mine ? "Fixing…" : "Fix"
-                tooltipText: "Run doctor --fix to repair the installation"
-                enabled: !root.actionsLocked
-                bordered: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.runAction("maintenance", "fix", "Running doctor fix",
-                  ["doctor", "--fix", "--json"])
-              }
-            }
-
-            Button {
-              visible: !!root.service && root.service.online
-              width: parent.width
-              text: "Open web panel"
-              tooltipText: "Opens the router's browser panel — sign-ins and API keys live there"
-              enabled: !!root.service && !root.service.mutationRunning
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: if (root.service) root.service.openWebPanel()
-            }
-
-            ActionNotice {
-              width: parent.width
-              domain: "maintenance"
-            }
+            service: root.service
+            nowMs: root.nowMs
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
           }
 
-          // ---------- Footer: manual refresh + freshness stamp ----------
+          // ---------- Footer: manual refresh + freshness stamp (chrome) ----------
           PanelSeparator { foreground: root.foreground }
 
           Button {
@@ -989,341 +405,5 @@ Panel {
     repeat: true
     triggeredOnStart: false
     onTriggered: root.nowMs = Date.now()
-  }
-
-  // Rounded track showing a fraction of an allowance.
-  component Meter: Item {
-    id: meter
-    property real value: -1
-    property bool alarming: false
-    property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
-
-    implicitHeight: thickness
-
-    Rectangle {
-      id: meterTrack
-      anchors.fill: parent
-      radius: height / 2
-      color: root.track
-    }
-
-    Rectangle {
-      anchors.left: meterTrack.left
-      anchors.verticalCenter: meterTrack.verticalCenter
-      height: meterTrack.height
-      radius: meterTrack.radius
-      width: meterTrack.width * root.clamp(meter.value, 0, 1)
-      color: meter.alarming ? root.urgent : root.foreground
-
-      Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-      }
-    }
-  }
-
-  // One row per day: label, bar, tokens. Today is picked out in full
-  // foreground so the week reads as a run-up to right now.
-  component DayRow: Item {
-    id: dayRow
-    property var day: null
-    property real ratio: 0
-    property bool today: false
-
-    implicitHeight: Math.max(dayLabel.implicitHeight, dayValue.implicitHeight) + Style.spacing.sm
-
-    Text {
-      textFormat: Text.PlainText
-      id: dayLabel
-      text: dayRow.day ? String(dayRow.day.label) : ""
-      color: dayRow.today ? root.foreground : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: dayRow.today
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(52)
-    }
-
-    Rectangle {
-      id: dayTrack
-      anchors.left: dayLabel.right
-      anchors.right: dayValue.left
-      anchors.leftMargin: Style.space(8)
-      anchors.rightMargin: Style.space(10)
-      anchors.verticalCenter: parent.verticalCenter
-      height: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
-      radius: height / 2
-      color: root.track
-
-      Rectangle {
-        anchors.left: parent.left
-        anchors.verticalCenter: parent.verticalCenter
-        height: parent.height
-        radius: parent.radius
-        width: parent.width * root.clamp(dayRow.ratio, 0, 1)
-        color: dayRow.today ? root.foreground : root.alpha(root.foreground, 0.55)
-
-        Behavior on width {
-          NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-        }
-      }
-    }
-
-    Text {
-      textFormat: Text.PlainText
-      id: dayValue
-      text: dayRow.day ? Model.compactTokens(dayRow.day.tokens) : ""
-      color: dayRow.today ? root.foreground : root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-      horizontalAlignment: Text.AlignRight
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(52)
-    }
-
-    MouseArea {
-      id: dayHover
-      anchors.fill: parent
-      hoverEnabled: true
-      acceptedButtons: Qt.NoButton
-    }
-
-    PanelToolTip {
-      visible: dayHover.containsMouse
-      text: root.dayTooltip(dayRow.day)
-      fontFamily: root.fontFamily
-    }
-  }
-
-  // Roll-up rows read as a table: the share bar fills the row behind the
-  // label instead of stacking under it, which keeps the dashboard on one
-  // screen (omarchy.agents' ModelRow pattern).
-  component ModelRow: Item {
-    id: modelRow
-    property string name: ""
-    property string tokens: ""
-    property string tooltip: ""
-    property real share: 0
-
-    implicitHeight: nameLabel.implicitHeight + Style.spacing.lg
-
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.cornerRadius
-      color: root.alpha(root.foreground, 0.05)
-    }
-
-    Rectangle {
-      anchors.left: parent.left
-      anchors.top: parent.top
-      anchors.bottom: parent.bottom
-      width: parent.width * root.clamp(modelRow.share, 0, 1)
-      radius: Style.cornerRadius
-      color: root.alpha(root.foreground, 0.14)
-
-      Behavior on width {
-        NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-      }
-    }
-
-    Text {
-      textFormat: Text.PlainText
-      id: nameLabel
-      text: modelRow.name
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-      elide: Text.ElideRight
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
-      anchors.right: tokensLabel.left
-      anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    Text {
-      textFormat: Text.PlainText
-      id: tokensLabel
-      text: modelRow.tokens
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-      font.bold: true
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    MouseArea {
-      id: rowHover
-      anchors.fill: parent
-      hoverEnabled: true
-      acceptedButtons: Qt.NoButton
-    }
-
-    PanelToolTip {
-      visible: rowHover.containsMouse
-      text: modelRow.tooltip
-      fontFamily: root.fontFamily
-    }
-  }
-
-  // Busy/error line for one controls section. Dim while the mutation runs,
-  // urgent once it has failed; hidden otherwise.
-  component ActionNotice: Text {
-    id: actionNotice
-    property string domain: ""
-    readonly property string notice: root.domainNotice(actionNotice.domain)
-
-    visible: notice !== ""
-    text: actionNotice.notice
-    color: root.service && root.service.mutationRunning ? root.dim : root.urgent
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    wrapMode: Text.WordWrap
-  }
-
-  // One provider from the setup catalog: configured pill + name, credential
-  // detail underneath, and on the right either the enable switch (configured)
-  // or the affordance that hands off to the web panel.
-  component ProviderRow: Item {
-    id: prow
-
-    property var provider: null
-
-    readonly property bool configured: !!provider && provider.configured === true
-    readonly property string cta: provider ? root.providerCta(provider) : ""
-    readonly property string detail: {
-      if (!provider) return ""
-      var kind = root.providerKindLabel(provider)
-      var note = String(provider.planNote || "")
-      return note !== "" ? kind + " · " + note : kind
-    }
-
-    implicitHeight: Math.max(provText.implicitHeight, provControl.implicitHeight)
-
-    Column {
-      id: provText
-      anchors.left: parent.left
-      anchors.right: provControl.left
-      anchors.rightMargin: Style.space(10)
-      anchors.verticalCenter: parent.verticalCenter
-      spacing: Style.space(2)
-
-      Item {
-        width: parent.width
-        implicitHeight: Math.max(provPill.height, provName.implicitHeight)
-
-        Rectangle {
-          id: provPill
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          radius: height / 2
-          width: provPillText.implicitWidth + Style.space(10)
-          height: Style.space(16)
-          color: prow.configured ? root.alpha(root.foreground, 0.14)
-            : root.alpha(root.foreground, 0.05)
-
-          Text {
-            textFormat: Text.PlainText
-            id: provPillText
-            anchors.centerIn: parent
-            text: prow.configured ? "CONFIGURED" : "NOT SET UP"
-            color: prow.configured ? root.foreground : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          id: provName
-          text: prow.provider ? String(prow.provider.name) : ""
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          font.bold: true
-          elide: Text.ElideRight
-          anchors.left: provPill.right
-          anchors.leftMargin: Style.space(8)
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-        }
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        width: parent.width
-        text: prow.detail
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
-      }
-    }
-
-    Item {
-      id: provControl
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-
-      width: Math.max(provSwitch.implicitWidth, provCta.implicitWidth, provNone.implicitWidth)
-      height: Math.max(provSwitch.implicitHeight, provCta.implicitHeight, provNone.implicitHeight)
-
-      ToggleSwitch {
-        id: provSwitch
-        visible: prow.configured
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        checked: prow.provider ? root.providerIsEnabled(prow.provider.id) : false
-        interactive: !root.actionsLocked
-        busy: !!root.service && root.service.mutationRunning
-        foreground: root.foreground
-        onToggled: if (prow.provider) root.toggleProvider(prow.provider)
-      }
-
-      Button {
-        id: provCta
-        visible: !prow.configured && prow.cta !== ""
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        text: prow.cta
-        tooltipText: "Opens the router's web panel"
-        enabled: !root.actionsLocked
-        bordered: true
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        fontSize: Style.font.caption
-        onClicked: if (root.service) root.service.openWebPanel()
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        id: provNone
-        visible: !prow.configured && prow.cta === ""
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        text: "No key needed"
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-    }
-
-    MouseArea {
-      id: prowHover
-      anchors.fill: parent
-      hoverEnabled: true
-      acceptedButtons: Qt.NoButton
-    }
-
-    PanelToolTip {
-      visible: prowHover.containsMouse && prow.provider !== null
-        && String(prow.provider.planNote || "") !== ""
-      text: prow.provider ? String(prow.provider.name) + " · " + String(prow.provider.planNote) : ""
-      fontFamily: root.fontFamily
-    }
   }
 }
