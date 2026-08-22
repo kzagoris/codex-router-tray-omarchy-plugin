@@ -84,13 +84,15 @@ Item {
   // on an empty list, so reachability arriving later is a second trigger.
   onActiveChanged: {
     modelsRoot._loadIfNeeded()
-    // Leaving with a change still unreconciled — a read that never
-    // succeeded, a router that went away — must not park an optimistic
-    // toggle for the next visit: what the next visit reads is the truth.
-    if (!modelsRoot.active && !modelsRoot.busy && modelsRoot._queue.length === 0) {
-      modelsRoot._reconciling = false
+    // Leaving with a change that nothing will ever reconcile — a failed
+    // read, a router that went away — must not park an optimistic toggle
+    // for the next visit. A read that is still on its way is not that case:
+    // dropping the toggle here would show the pre-mutation state until it
+    // lands, and re-entering asks for no new read because the snapshot it
+    // finds is not null.
+    if (!modelsRoot.active && !modelsRoot.busy
+        && modelsRoot._queue.length === 0 && !modelsRoot._reconciling)
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
-    }
   }
   onControlsReachableChanged: modelsRoot._loadIfNeeded()
 
