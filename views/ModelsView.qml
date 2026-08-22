@@ -94,7 +94,12 @@ Item {
         && modelsRoot._queue.length === 0 && !modelsRoot._reconciling)
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
-  onControlsReachableChanged: modelsRoot._loadIfNeeded()
+  onControlsReachableChanged: {
+    modelsRoot._loadIfNeeded()
+    // Nothing is coming to confirm a pending toggle while the router is
+    // away, so stop showing it as if something were.
+    if (!modelsRoot.controlsReachable) modelsRoot._giveUpReconciling()
+  }
 
   function _loadIfNeeded() {
     if (!modelsRoot.active || !modelsRoot.controlsReachable) return
@@ -234,10 +239,25 @@ Item {
   // before anything else can mutate.
   function _settle() {
     if (!modelsRoot.service) return
+    if (!modelsRoot.controlsReachable) {
+      // refreshData() would no-op, so no read is coming: show what is known
+      // rather than a setting nothing can confirm.
+      modelsRoot._giveUpReconciling()
+      Qt.callLater(modelsRoot._releaseDeferral)
+      return
+    }
     modelsRoot._settledRound = modelsRoot.service.dataRound
     modelsRoot._reconciling = true
     modelsRoot.service.refreshData()
     Qt.callLater(modelsRoot._releaseDeferral)
+  }
+
+  // A pending toggle that nothing will confirm goes back to what the last
+  // successful read said. Never on screen: a setting that did not take.
+  function _giveUpReconciling() {
+    if (!modelsRoot._reconciling) return
+    modelsRoot._reconciling = false
+    modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
 
   function _releaseDeferral() {
@@ -274,6 +294,19 @@ Item {
       if (modelsRoot.service.dataRound <= modelsRoot._settledRound) return
       modelsRoot._reconciling = false
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
+    }
+
+    // The round this view was waiting for has closed. A fresh snapshot
+    // would already have retired the overrides above — the service assigns
+    // it before the round closes — so reaching here means the catalog read
+    // failed, and waiting for a confirmation that never came would park the
+    // optimistic toggle on screen indefinitely.
+    function onDataLoadingChanged() {
+      if (modelsRoot.service.dataLoading) return
+      if (!modelsRoot._reconciling) return
+      if (modelsRoot.busy || modelsRoot._queue.length > 0) return
+      if (modelsRoot.service.dataRound <= modelsRoot._settledRound) return
+      modelsRoot._giveUpReconciling()
     }
   }
 
