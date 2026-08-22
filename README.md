@@ -9,7 +9,7 @@ inside the Omarchy shell (Quickshell).
 Plugin id: `kzagoris.codex-router-tray` · License: MIT
 
 <p align="center">
-  <img src="docs/screenshots/panel-top.png" alt="Panel — status, modes, activity, usage" width="380">
+  <img src="docs/screenshots/panel-top.webp" alt="Panel — status, modes, activity, usage" width="380">
 </p>
 
 ## What you get
@@ -25,12 +25,12 @@ Plugin id: `kzagoris.codex-router-tray` · License: MIT
 
 Optional label shows the provider currently handling traffic.
 
-<img src="docs/screenshots/bar-widget.png" alt="Bar widget" width="192">
+<img src="docs/screenshots/bar-widget.webp" alt="Bar widget" width="192">
 
 On left/right (vertical) bars the widget stacks one icon-slot per line, like
 the clock:
 
-<img src="docs/screenshots/bar-vertical.png" alt="Vertical bar widget" width="135">
+<img src="docs/screenshots/bar-vertical.webp" alt="Vertical bar widget" width="135">
 
 **Panel** (left click) — one scrolling column, agents-style:
 
@@ -43,7 +43,7 @@ the clock:
 - **Maintenance** — restart service, update, `doctor --fix`, open web panel, refresh
 
 <p align="center">
-  <img src="docs/screenshots/panel-providers.png" alt="Panel — providers and maintenance" width="380">
+  <img src="docs/screenshots/panel-providers.webp" alt="Panel — providers and maintenance" width="380">
 </p>
 
 **Middle click** opens the router's browser panel at its capability URL — the
