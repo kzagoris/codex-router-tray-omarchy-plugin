@@ -238,7 +238,10 @@ Item {
   // Qt.callLater lets that signal be swallowed and hands the policy back
   // before anything else can mutate.
   function _settle() {
-    if (!modelsRoot.service) return
+    if (!modelsRoot.service) {
+      modelsRoot._giveUpReconciling()
+      return
+    }
     if (!modelsRoot.controlsReachable) {
       // refreshData() would no-op, so no read is coming: show what is known
       // rather than a setting nothing can confirm.
@@ -254,8 +257,11 @@ Item {
 
   // A pending toggle that nothing will confirm goes back to what the last
   // successful read said. Never on screen: a setting that did not take.
+  //
+  // Unconditional on purpose. Guarding on `_reconciling` would skip exactly
+  // the case that needs this most — the router going away before the drain,
+  // so a toggle was applied optimistically while no read was ever expected.
   function _giveUpReconciling() {
-    if (!modelsRoot._reconciling) return
     modelsRoot._reconciling = false
     modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
