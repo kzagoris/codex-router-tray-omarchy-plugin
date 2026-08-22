@@ -67,12 +67,19 @@ Item {
     onJobSucceeded: function(args) {
       if (controlProcess.isServiceCommand(args)) {
         serviceRefreshTimer.restart()
-      } else {
+      } else if (!root.deferAutoRefresh) {
         root.pollHealth()
         root.refreshData()
       }
     }
   }
+
+  // Set by a consumer running a batch of mutations that wants to reconcile
+  // once, when its own queue drains, instead of once per command — the
+  // Models view flips several toggles in a row and a read per toggle would
+  // be several catalog fetches for one intent. The consumer owns clearing it
+  // and asking for the read; nothing else changes about the policy above.
+  property bool deferAutoRefresh: false
 
   // Facade surface for what the transports own but consumers read here.
   readonly property alias callerSecret: invokeClient.callerSecret

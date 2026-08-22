@@ -360,10 +360,15 @@ Panel {
 
           ModelsView {
             visible: root.selectedView === 3
+            // The snapshot is fetched on first entry to this view, not on a
+            // timer: the catalog is the largest payload the panel reads.
+            active: root.selectedView === 3 && root.opened
             width: parent.width
             service: root.service
+            panel: root
             nowMs: root.nowMs
             foreground: root.foreground
+            urgent: root.urgent
             dim: root.dim
             fontFamily: root.fontFamily
           }

@@ -47,6 +47,16 @@ Item {
   readonly property bool loginFree: statusRoot.codexTarget.loginFree === true
   readonly property bool signedRouting: statusRoot.codexTarget.signedRouting === true
 
+  // Tool-result aging is a routing mode, so it belongs beside the other two
+  // rather than in the Models view (PLAN.md §11.2). The router refuses the
+  // setting outright when the environment forces it off, and says so.
+  readonly property var toolResultAging: {
+    var settings = statusRoot.codexTarget.modelSettings
+    return settings && settings.toolResultAging ? settings.toolResultAging : ({})
+  }
+  readonly property bool toolResultAgingOn: statusRoot.toolResultAging.enabled === true
+  readonly property bool toolResultAgingForced: statusRoot.toolResultAging.environmentOverride === true
+
   height: column.implicitHeight
 
   function formatElapsed(ms) {
@@ -105,6 +115,26 @@ Item {
         opacity: statusRoot.actionsLocked ? 0.55 : 1
         onClicked: if (statusRoot.panel) statusRoot.panel.runAction("modes", "signed-routing", "Switching signed routing",
           ["signed-routing", statusRoot.signedRouting ? "off" : "on"])
+      }
+
+      Toggle {
+        width: parent.width
+        label: "Compact old tool results"
+        description: statusRoot.toolResultAgingForced
+          ? "Forced off by the router's environment."
+          : "Reduce repeated context on external models."
+        checked: statusRoot.toolResultAgingOn
+        foreground: statusRoot.foreground
+        accent: Color.accent
+        fontFamily: statusRoot.fontFamily
+        opacity: statusRoot.actionsLocked || statusRoot.toolResultAgingForced ? 0.55 : 1
+        onClicked: {
+          if (statusRoot.toolResultAgingForced) return
+          if (statusRoot.panel)
+            statusRoot.panel.runAction("modes", "tool-result-aging",
+              "Switching tool-result compaction",
+              ["tool-result-aging", statusRoot.toolResultAgingOn ? "off" : "on"])
+        }
       }
 
       ActionNotice {

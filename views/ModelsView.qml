@@ -1,27 +1,261 @@
 import QtQuick
 import qs.Commons
 import qs.Ui
+import "../logic/Catalog.js" as Catalog
+import "../ui"
 
-// MODELS view: placeholder. Issue 002 fills it with the catalog-model
-// controls (picker visibility, subagent eligibility) over one
-// provider-grouped list; until then the view says so instead of pretending.
+// MODELS view: every catalog model the target offers, grouped by provider,
+// with one live toggle.
 //
-// The panel hands over the service, the live clock and the palette — the
-// same contract the real view will bind to.
+// A sub-switcher — not two stacked lists — chooses whether that toggle edits
+// picker visibility or subagent eligibility, so a click can never land on the
+// wrong setting (the failure the router's own tray documents in its source).
+// Its labels carry both counts, so the setting that is not being edited stays
+// legible.
+//
+// Every rule this view could get wrong lives in logic/Catalog.js: membership,
+// grouping and sort, secondary text, proof badges, the interlock, and every
+// count. This file binds to what that returns and owns the transport side —
+// the optimistic overrides, the coalescing runner over the control CLI, and
+// the single re-read when the runner drains.
 Item {
   id: modelsRoot
 
   // ------------------------------------------------------------- contract
 
   property var service: null
+  // The panel, for cross-view navigation (the empty state points at
+  // Providers). Views are selected by index there.
+  property var panel: null
   property double nowMs: 0
+  // True while this is the panel's visible view: the snapshot is fetched on
+  // first entry rather than on a timer, and the proof re-read only runs for
+  // a reader.
+  property bool active: false
 
   // Palette, handed over by the panel.
   property color foreground: Color.foreground
+  property color urgent: Color.urgent
   property color dim: Qt.darker(modelsRoot.foreground, 1.55)
   property string fontFamily: Style.font.family
 
+  // ------------------------------------------------------- derived state
+
+  readonly property bool controlsReachable: !!service && service.online
+    && service.hasCallerSecret
+
+  // Which setting the single list edits: "picker" or "subagents".
+  property string setting: "picker"
+
+  // Session-scoped collapse state, keyed by provider id. Var-property
+  // objects only notify on reassignment, so every change rebuilds it.
+  property var collapsed: ({})
+
+  // Toggles that have been clicked but whose control command has not been
+  // reconciled yet, keyed {picker: {slug: bool}, subagents: {slug: bool}}.
+  // The view model reads these ahead of the snapshot, which is what makes a
+  // toggle answer the instant it is clicked.
+  property var overrides: ({ picker: ({}), subagents: ({}) })
+
+  readonly property var codexTarget: service ? service.codexTarget : ({})
+
+  readonly property var viewModel: Catalog.viewModel(modelsRoot.codexTarget, {
+    setting: modelsRoot.setting,
+    overrides: modelsRoot.overrides,
+    collapsed: modelsRoot.collapsed
+  })
+
+  readonly property bool pickerSetting: modelsRoot.setting === "picker"
+
   height: column.implicitHeight
+
+  // --------------------------------------------------------- lazy loading
+
+  // First entry pays for the snapshot; a view nobody opens fetches nothing.
+  // After that the panel's own refresh and the post-mutation re-read keep it
+  // current — this view starts no timer of its own except the proof re-read
+  // below.
+  onActiveChanged: {
+    if (!modelsRoot.active) return
+    if (!modelsRoot.controlsReachable) return
+    if (!modelsRoot.service.snapshot) modelsRoot.service.refreshData()
+  }
+
+  // The one state the router changes on its own: a capability probe running
+  // in the background settles into proven or failed without anybody asking.
+  // Re-read on a short interval while a visible row says "Working…", and
+  // stop the moment none do.
+  Timer {
+    interval: 4000
+    repeat: true
+    running: modelsRoot.active && modelsRoot.controlsReachable
+      && modelsRoot.viewModel.anyChecking && !modelsRoot.busy
+    onTriggered: modelsRoot.service.refreshData()
+  }
+
+  // ------------------------------------------------------------ mutations
+  //
+  // Every setter here is a control-CLI process spawn: the loopback HTTP
+  // surface is read-only by the router's deliberate design. Clicks must not
+  // wait for one, so the toggle flips into `overrides` immediately and the
+  // intent joins a queue that runs one command at a time. Repeated intents
+  // for the same model collapse to the last one, so impatient re-toggling
+  // settles on what was chosen last instead of queueing contradictory work.
+
+  property var _queue: []
+  property bool busy: false
+  property string notice: ""
+
+  function _cloneOverrides() {
+    var next = { picker: ({}), subagents: ({}) }
+    var settings = ["picker", "subagents"]
+    for (var s = 0; s < settings.length; s++) {
+      var name = settings[s]
+      var bucket = modelsRoot.overrides[name] || ({})
+      for (var slug in bucket) next[name][slug] = bucket[slug]
+    }
+    return next
+  }
+
+  function _setOverride(setting, slug, value) {
+    var next = modelsRoot._cloneOverrides()
+    if (value === null) delete next[setting][slug]
+    else next[setting][slug] = value
+    modelsRoot.overrides = next
+  }
+
+  // key identifies what an intent is about, so a second click on the same
+  // row replaces the queued one instead of adding to it.
+  function _enqueue(intent) {
+    var next = []
+    for (var i = 0; i < modelsRoot._queue.length; i++)
+      if (modelsRoot._queue[i].key !== intent.key) next.push(modelsRoot._queue[i])
+    next.push(intent)
+    modelsRoot._queue = next
+    modelsRoot._drain()
+  }
+
+  function _drain() {
+    if (modelsRoot.busy) return
+    if (modelsRoot._queue.length === 0) {
+      // Drained: one re-read reconciles everything that ran, and the
+      // optimistic overrides retire when it lands (see onDataLoadingChanged).
+      if (modelsRoot.service) {
+        modelsRoot.service.deferAutoRefresh = false
+        modelsRoot._reconciling = true
+        modelsRoot.service.refreshData()
+      }
+      return
+    }
+    if (!modelsRoot.controlsReachable) {
+      modelsRoot._queue = []
+      modelsRoot.overrides = { picker: ({}), subagents: ({}) }
+      modelsRoot.notice = "Router unreachable — the change was not applied."
+      return
+    }
+
+    var next = modelsRoot._queue.slice(1)
+    var intent = modelsRoot._queue[0]
+    modelsRoot._queue = next
+    modelsRoot.busy = true
+    modelsRoot.notice = intent.label + "…"
+    // The service's own "mutate, then re-read" would fire once per command;
+    // this view reconciles once, when the whole queue has drained.
+    modelsRoot.service.deferAutoRefresh = true
+
+    modelsRoot.service.runControl(intent.label, intent.args, function(error) {
+      modelsRoot.busy = false
+      if (error !== null) {
+        // Never leave a setting on screen that did not take.
+        if (intent.setting !== "" && intent.slug !== "")
+          modelsRoot._setOverride(intent.setting, intent.slug, null)
+        modelsRoot.notice = error
+      } else {
+        modelsRoot.notice = ""
+      }
+      modelsRoot._drain()
+    })
+  }
+
+  // True between the drain and the re-read that reconciles it.
+  property bool _reconciling: false
+
+  Connections {
+    target: modelsRoot.service
+    enabled: !!modelsRoot.service
+
+    // The reconciling read has landed: the snapshot now answers for every
+    // toggle, so the optimistic overrides retire together.
+    function onDataLoadingChanged() {
+      if (modelsRoot.service.dataLoading) return
+      if (!modelsRoot._reconciling) return
+      modelsRoot._reconciling = false
+      modelsRoot.overrides = { picker: ({}), subagents: ({}) }
+    }
+  }
+
+  function toggleRow(row) {
+    if (!row || row.toggleEnabled !== true) return
+    var wanted = !(row.on === true)
+    modelsRoot._setOverride(modelsRoot.setting, row.slug, wanted)
+    if (modelsRoot.pickerSetting) {
+      modelsRoot._enqueue({
+        key: "picker:" + row.slug,
+        setting: "picker",
+        slug: row.slug,
+        label: (wanted ? "Showing " : "Hiding ") + row.displayName,
+        args: ["picker", "set", row.slug, wanted ? "show" : "hide"]
+      })
+    } else {
+      modelsRoot._enqueue({
+        key: "subagents:" + row.slug,
+        setting: "subagents",
+        slug: row.slug,
+        label: (wanted ? "Enabling " : "Disabling ") + row.displayName + " as a subagent",
+        args: ["subagents", "set", row.slug, wanted ? "on" : "off"]
+      })
+    }
+  }
+
+  // Bulk changes go through the router's own whole-list and per-provider
+  // verbs — never a loop of per-model calls, which would be one process
+  // spawn per model. They are not optimistic: a single verb's effect is what
+  // the reconciling re-read paints.
+  function runBulk(key, label, args) {
+    modelsRoot._enqueue({ key: key, setting: "", slug: "", label: label, args: args })
+  }
+
+  function bulkAll(on) {
+    if (modelsRoot.pickerSetting)
+      modelsRoot.runBulk("picker:all", on ? "Showing every model" : "Hiding every model",
+        ["picker", "all", on ? "show" : "hide"])
+    else
+      modelsRoot.runBulk("subagents:all",
+        on ? "Enabling every proven model" : "Clearing subagent selection",
+        ["subagents", on ? "select-all" : "unselect-all"])
+  }
+
+  function bulkProvider(providerId, on) {
+    if (modelsRoot.pickerSetting)
+      modelsRoot.runBulk("picker:provider:" + providerId,
+        (on ? "Showing " : "Hiding ") + providerId + " models",
+        ["picker", "provider", providerId, on ? "show" : "hide"])
+    else
+      modelsRoot.runBulk("subagents:provider:" + providerId,
+        providerId + (on ? " models on as subagents" : " models off as subagents"),
+        ["subagents", "provider", providerId, on ? "on" : "off"])
+  }
+
+  function toggleCollapsed(providerId) {
+    var next = ({})
+    for (var id in modelsRoot.collapsed) next[id] = modelsRoot.collapsed[id]
+    next[providerId] = !(modelsRoot.collapsed[providerId] === true)
+    modelsRoot.collapsed = next
+  }
+
+  function showPicker() {
+    modelsRoot.setting = "picker"
+  }
 
   Column {
     id: column
@@ -35,15 +269,231 @@ Item {
       fontFamily: modelsRoot.fontFamily
     }
 
+    // ---------- Sub-switcher: which setting the list edits ----------
+    Row {
+      width: parent.width
+      spacing: Style.spacing.sm
+      visible: modelsRoot.controlsReachable && !modelsRoot.viewModel.empty
+
+      readonly property real cellWidth: (width - spacing) / 2
+
+      Button {
+        width: parent.cellWidth
+        text: Catalog.switcherLabel("picker", modelsRoot.viewModel.totals)
+        selected: modelsRoot.pickerSetting
+        bordered: true
+        foreground: modelsRoot.foreground
+        fontFamily: modelsRoot.fontFamily
+        fontSize: Style.font.caption
+        verticalPadding: Style.spacing.controlPaddingY
+        onClicked: modelsRoot.setting = "picker"
+      }
+
+      Button {
+        width: parent.cellWidth
+        text: Catalog.switcherLabel("subagents", modelsRoot.viewModel.totals)
+        selected: !modelsRoot.pickerSetting
+        bordered: true
+        foreground: modelsRoot.foreground
+        fontFamily: modelsRoot.fontFamily
+        fontSize: Style.font.caption
+        verticalPadding: Style.spacing.controlPaddingY
+        onClicked: modelsRoot.setting = "subagents"
+      }
+    }
+
+    // ---------- Subagent mode: meaningless under Picker, so absent there ----------
+    Toggle {
+      width: parent.width
+      visible: modelsRoot.controlsReachable && !modelsRoot.viewModel.empty
+        && !modelsRoot.pickerSetting
+      label: "All proven models"
+      description: "Expose every verified v2 model as a Codex subagent."
+      checked: modelsRoot.viewModel.allProven
+      foreground: modelsRoot.foreground
+      accent: Color.accent
+      fontFamily: modelsRoot.fontFamily
+      onClicked: modelsRoot.runBulk("subagents:mode",
+        modelsRoot.viewModel.allProven ? "Switching to proven-only subagents"
+          : "Switching to all proven models",
+        ["subagents", "mode", modelsRoot.viewModel.allProven ? "proven" : "all"])
+    }
+
+    // ---------- Bulk actions over the whole list ----------
+    Row {
+      width: parent.width
+      spacing: Style.spacing.sm
+      visible: modelsRoot.controlsReachable && !modelsRoot.viewModel.empty
+
+      readonly property real cellWidth: (width - spacing) / 2
+
+      Button {
+        width: parent.cellWidth
+        text: modelsRoot.pickerSetting ? "Show all" : "Subagents on"
+        bordered: true
+        foreground: modelsRoot.foreground
+        fontFamily: modelsRoot.fontFamily
+        fontSize: Style.font.caption
+        onClicked: modelsRoot.bulkAll(true)
+      }
+
+      Button {
+        width: parent.cellWidth
+        text: modelsRoot.pickerSetting ? "Hide all" : "Subagents off"
+        bordered: true
+        foreground: modelsRoot.foreground
+        fontFamily: modelsRoot.fontFamily
+        fontSize: Style.font.caption
+        onClicked: modelsRoot.bulkAll(false)
+      }
+    }
+
+    // ---------- Provider groups ----------
+    Repeater {
+      model: modelsRoot.viewModel.groups
+
+      Column {
+        required property var modelData
+
+        width: parent.width
+        spacing: Style.spacing.sm
+
+        // Group header: name, what the visible setting counts, and the
+        // collapse affordance — one nineteen-model provider must not bury
+        // the rest of the list.
+        Item {
+          width: parent.width
+          implicitHeight: Math.max(groupName.implicitHeight, groupSummary.implicitHeight)
+
+          Text {
+            textFormat: Text.PlainText
+            id: groupName
+            anchors.left: parent.left
+            anchors.right: groupSummary.left
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            text: (modelData.collapsed ? "▸ " : "▾ ") + String(modelData.providerName)
+            color: modelsRoot.foreground
+            font.family: modelsRoot.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            id: groupSummary
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: String(modelData.summary)
+            color: modelsRoot.dim
+            font.family: modelsRoot.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: modelsRoot.toggleCollapsed(modelData.providerId)
+          }
+        }
+
+        // The same pair of actions as the whole list, scoped to one account.
+        Row {
+          width: parent.width
+          spacing: Style.spacing.sm
+          visible: !modelData.collapsed
+
+          readonly property real cellWidth: (width - spacing) / 2
+
+          Button {
+            width: parent.cellWidth
+            text: modelsRoot.pickerSetting ? "Show all" : "Subagents on"
+            foreground: modelsRoot.foreground
+            fontFamily: modelsRoot.fontFamily
+            fontSize: Style.font.caption
+            onClicked: modelsRoot.bulkProvider(modelData.providerId, true)
+          }
+
+          Button {
+            width: parent.cellWidth
+            text: modelsRoot.pickerSetting ? "Hide all" : "Subagents off"
+            foreground: modelsRoot.foreground
+            fontFamily: modelsRoot.fontFamily
+            fontSize: Style.font.caption
+            onClicked: modelsRoot.bulkProvider(modelData.providerId, false)
+          }
+        }
+
+        Repeater {
+          model: modelData.collapsed ? [] : modelData.models
+
+          CatalogRow {
+            required property var modelData
+
+            width: parent.width
+            row: modelData
+            locked: !modelsRoot.controlsReachable
+            foreground: modelsRoot.foreground
+            urgent: modelsRoot.urgent
+            dim: modelsRoot.dim
+            fontFamily: modelsRoot.fontFamily
+            onToggleRequested: modelsRoot.toggleRow(modelData)
+            // The interlock explains itself and then takes the operator to
+            // where the cause can be fixed. It never unhides the model.
+            onInterlockRequested: modelsRoot.showPicker()
+          }
+        }
+      }
+    }
+
+    // ---------- Empty and unreachable states ----------
     Text {
       textFormat: Text.PlainText
+      visible: !modelsRoot.controlsReachable
       width: parent.width
-      text: "Catalog model controls are on their way.\nPicker and subagent switches will live here."
+      text: !modelsRoot.service || !modelsRoot.service.online
+        ? "Router offline — no catalog to show."
+        : "Caller key missing — the catalog cannot be read."
       color: modelsRoot.dim
       font.family: modelsRoot.fontFamily
       font.pixelSize: Style.font.bodySmall
       horizontalAlignment: Text.AlignHCenter
       wrapMode: Text.WordWrap
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: modelsRoot.controlsReachable && modelsRoot.viewModel.empty
+      width: parent.width
+      text: "No catalog models — every provider is disabled."
+      color: modelsRoot.dim
+      font.family: modelsRoot.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignHCenter
+      wrapMode: Text.WordWrap
+    }
+
+    Button {
+      width: parent.width
+      visible: modelsRoot.controlsReachable && modelsRoot.viewModel.empty
+      text: "Open Providers"
+      bordered: true
+      foreground: modelsRoot.foreground
+      fontFamily: modelsRoot.fontFamily
+      fontSize: Style.font.bodySmall
+      onClicked: if (modelsRoot.panel) modelsRoot.panel.selectedView = 2
+    }
+
+    // Busy line while a command runs, the router's own message when one
+    // failed and the toggle reverted.
+    ActionNotice {
+      width: parent.width
+      notice: modelsRoot.notice
+      running: modelsRoot.busy
+      dim: modelsRoot.dim
+      urgent: modelsRoot.urgent
+      fontFamily: modelsRoot.fontFamily
     }
   }
 }

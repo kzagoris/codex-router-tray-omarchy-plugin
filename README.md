@@ -36,10 +36,10 @@ the clock:
 box and footer visible in every view (the panel deviates from the
 first-party single-column idiom on purpose; see ADR 0001 in the dev repo):
 
-- **Status** — modes (login-free, signed routing), live activity, maintenance actions
+- **Status** — modes (login-free, signed routing, tool-result compaction), live activity, maintenance actions
 - **Usage** — per-provider tokens by day (7-day bars) and by provider (share rows); optional ChatGPT quota cards
 - **Providers** — every catalog provider with configured badge and enable/disable toggle; "Add key" / "Sign in" hand off to the router's own web panel
-- **Models** — placeholder; catalog-model controls arrive with v0.2.0
+- **Models** — every catalog model an enabled provider offers, grouped by provider and collapsible. A sub-switcher chooses whether the row toggle edits **picker visibility** or **subagent eligibility**, and carries both counts, so a click can never land on the wrong setting. Picker rows show the model's slug; subagent rows show its proof (`Proven v2`, `Untested`, `Working…`, `Error: …` with the router's own reason on hover). A model hidden from the picker cannot be a subagent: its toggle is inert, the badge says why, and the row goes to the Picker sub-view rather than unhiding the model behind your back. Show-all / hide-all and subagents-on / subagents-off act on the whole list or one provider through the router's own bulk verbs — one command, not one per model.
 
 The selected view is session-scoped: it survives a close/open round-trip and
 resets when the shell restarts.

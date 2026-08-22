@@ -124,10 +124,14 @@ Item {
     var clean = []
     for (var i = 0; i < args.length; i++) {
       var arg = String(args[i])
-      // Every argument is generated here, but provider ids reach a command
-      // line either way — constrain them to the shape the router itself
-      // enforces rather than trusting the caller.
-      if (!/^-{0,2}[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(arg)) {
+      // Every argument is generated here, but provider ids and catalog
+      // model slugs reach a command line either way — constrain them to the
+      // shape the router itself enforces rather than trusting the caller.
+      // Slugs are provider-qualified (`opencode-go/glm-5.1`), so the slash
+      // belongs in the alphabet; nothing is passed through a shell, and the
+      // leading character stays alphanumeric so no argument can turn into a
+      // path or an option.
+      if (!/^-{0,2}[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/.test(arg)) {
         root.mutationError = "Internal error: refusing to run the control command."
         if (onDone) onDone(root.mutationError)
         return
