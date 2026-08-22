@@ -116,10 +116,12 @@ Item {
   property bool _refreshPending: false
   // Wall-clock of the last round that produced any fresh payload.
   property double lastUpdatedAt: 0
-  // Wall-clock of the moment the current round *began*. A consumer that has
-  // just changed something needs to know a payload was read after its change
-  // landed, and a round that merely finishes late cannot answer for it.
-  property double dataStartedAt: 0
+  // Monotonic counter of read rounds, incremented as each one *begins*. A
+  // consumer that has just changed something needs to know a payload was
+  // read after its change landed, and a round that merely finishes late
+  // cannot answer for it. A counter rather than a clock: two rounds can
+  // begin in the same millisecond.
+  property int dataRound: 0
 
   // Set by the panel while its popup is up: the authenticated endpoints are
   // only polled for a reader, never behind a closed panel.
@@ -227,7 +229,7 @@ Item {
     }
 
     root.dataLoading = true
-    root.dataStartedAt = Date.now()
+    root.dataRound++
     var rounds = [{ command: "control_snapshot", prop: "snapshot" },
                   { command: "provider_setup", prop: "providerSetup" },
                   { command: "provider_usage", prop: "providerUsage" }]

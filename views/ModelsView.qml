@@ -82,7 +82,16 @@ Item {
   // current — this view starts no timer of its own except the proof re-read
   // below. Entering while the router is unreachable must not strand the view
   // on an empty list, so reachability arriving later is a second trigger.
-  onActiveChanged: modelsRoot._loadIfNeeded()
+  onActiveChanged: {
+    modelsRoot._loadIfNeeded()
+    // Leaving with a change still unreconciled — a read that never
+    // succeeded, a router that went away — must not park an optimistic
+    // toggle for the next visit: what the next visit reads is the truth.
+    if (!modelsRoot.active && !modelsRoot.busy && modelsRoot._queue.length === 0) {
+      modelsRoot._reconciling = false
+      modelsRoot.overrides = { picker: ({}), subagents: ({}) }
+    }
+  }
   onControlsReachableChanged: modelsRoot._loadIfNeeded()
 
   function _loadIfNeeded() {
@@ -123,12 +132,12 @@ Item {
   readonly property string notice: modelsRoot.busy
     ? modelsRoot.runningLabel + "…" : modelsRoot.errorNotice
 
-  // Wall-clock of the moment the queue last drained. A read that *began*
-  // after it is the one that can answer for everything that ran; a round
-  // that merely finishes later may have started before the change landed.
-  property double _settledAt: 0
+  // The service's read-round counter as it stood when the queue last
+  // drained. Only a round that *began* after that can answer for everything
+  // that ran; a round that merely finishes later may have started before the
+  // change landed.
+  property int _settledRound: 0
   property bool _reconciling: false
-  property bool _lastRunFailed: false
 
   // Switching the setting moves the operator away from the row that failed,
   // so its message goes with them.
@@ -198,7 +207,6 @@ Item {
 
     modelsRoot.service.runControl(intent.label, intent.args, function(error) {
       modelsRoot.busy = false
-      modelsRoot._lastRunFailed = error !== null
       if (error !== null) {
         // Never leave a setting on screen that did not take — unless a newer
         // click for the same row is already queued, in which case that
@@ -216,17 +224,22 @@ Item {
     })
   }
 
-  // The queue is empty: hand the re-read back to the service's own
-  // "mutate, then re-read" by clearing the deferral *before* this callback
-  // returns — the jobSucceeded that follows the last command then performs
-  // exactly one read. A failed last command emits no such signal, so that
-  // case asks for the read itself.
+  // The queue is empty: ask for the one read that reconciles everything that
+  // ran. The deferral stays on across this call deliberately — the control
+  // process emits its jobSucceeded *after* the callback that got us here,
+  // and its own re-read would be the second one. Releasing it through
+  // Qt.callLater lets that signal be swallowed and hands the policy back
+  // before anything else can mutate.
   function _settle() {
     if (!modelsRoot.service) return
-    modelsRoot._settledAt = Date.now()
+    modelsRoot._settledRound = modelsRoot.service.dataRound
     modelsRoot._reconciling = true
-    modelsRoot.service.deferAutoRefresh = false
-    if (modelsRoot._lastRunFailed) modelsRoot.service.refreshData()
+    modelsRoot.service.refreshData()
+    Qt.callLater(modelsRoot._releaseDeferral)
+  }
+
+  function _releaseDeferral() {
+    if (modelsRoot.service) modelsRoot.service.deferAutoRefresh = false
   }
 
   // Nothing can be applied: drop the queue, drop every optimistic toggle so
@@ -238,21 +251,25 @@ Item {
     modelsRoot._reconciling = false
     modelsRoot.errorNotice = message
     modelsRoot._errorKey = ""
-    if (modelsRoot.service) modelsRoot.service.deferAutoRefresh = false
+    Qt.callLater(modelsRoot._releaseDeferral)
   }
 
   Connections {
     target: modelsRoot.service
     enabled: !!modelsRoot.service
 
-    // A read has landed. It reconciles this view only if it began after the
-    // last command finished and nothing is pending — a round that was
+    // A fresh snapshot has landed. It reconciles this view only if its round
+    // began after the last command finished and nothing is pending — a round
     // already in flight carries pre-mutation data, and clearing the
     // optimistic toggles against it would show the operator the old state.
-    function onLastUpdatedAtChanged() {
+    //
+    // Bound to the snapshot rather than to the round closing: a round can
+    // close having refreshed usage while the catalog read itself failed, and
+    // that answers for nothing here.
+    function onSnapshotChanged() {
       if (!modelsRoot._reconciling) return
       if (modelsRoot.busy || modelsRoot._queue.length > 0) return
-      if (modelsRoot.service.dataStartedAt < modelsRoot._settledAt) return
+      if (modelsRoot.service.dataRound <= modelsRoot._settledRound) return
       modelsRoot._reconciling = false
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
     }
