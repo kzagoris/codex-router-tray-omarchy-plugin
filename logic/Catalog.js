@@ -20,7 +20,7 @@
 //
 // Plain script on purpose: QML loads this with `import "logic/Catalog.js"`,
 // so no imports and no exports. Everything is defensive; router payloads are
-// verified against 0.4.0-beta.4 but every accessor tolerates absence.
+// verified against 0.5.0 but every accessor tolerates absence.
 
 var PICKER = "picker";
 var SUBAGENTS = "subagents";
@@ -104,20 +104,57 @@ function isVisible(entry, hidden, overrides) {
   return entry.visible !== false;
 }
 
-function isSubagentOn(entry, visible, subagentState, overrides) {
+function isSubagentOn(entry, visible, subagentState, mode, overrides) {
   if (!visible) return false;
   var pending = overrideFor(overrides, SUBAGENTS, String(entry.slug));
   if (pending !== null) return pending;
   var slug = String(entry.slug);
   if (subagentState.disabled[slug]) return false;
-  return entry.multiAgentVersion === "v2" || subagentState.selected[slug] === true;
+  if (entry.multiAgentVersion === "v2") return true;
+  return mode === "all" || (mode === "selected" && subagentState.selected[slug] === true);
 }
 
-// proven / untested / checking / failed, plus the interlock's own badge.
-// The reason is the router's, so a failure can be acted on instead of
-// guessed at.
+// The registry's standing verdict, read before anything else: the router's
+// `subagents set` guard refuses "v1" outright, and `multiAgentVersion` is
+// what the router published after applying local settings — the two
+// disagree by design, so only this field predicts the refusal.
+function hasV1SubagentCertification(entry) {
+  return String(asObject(entry).subagentCertification || "") === "v1";
+}
+
+// One concise picker caption for the two 0.5 facts an operator actually
+// reads off a row: free routes and the synthesized native context variants
+// that are not Codex's own picker entries. Picker-only on purpose — the
+// Subagents surface is trying to reason about proof state, and the interlock
+// badges must keep that slot.
+function pickerCaption(entry) {
+  var parts = [];
+  if (asObject(entry).isFree === true) parts.push("Free");
+  if (asObject(entry).nativeClientManaged === false)
+    parts.push("Router-managed context variant");
+  return parts.join(" · ");
+}
+
+// candidate / verified / checking / failed, plus legacy and interlock badges.
+// Statuses follow the 0.5.0 proof lifecycle: a passing probe writes
+// `candidate` until the registry certifies the route (its multiAgentVersion
+// becomes "v2"). `experimental` and `proven` survive only as legacy records
+// written by 0.4 and no longer promote anything. The reason is the router's,
+// so a failure can be acted on instead of guessed at.
 function proofBadge(entry, visible, proof) {
   if (!visible) return { kind: "hidden", text: "Hidden in picker", tooltip: "", urgent: false };
+  if (hasV1SubagentCertification(entry))
+    return {
+      kind: "v1-certified",
+      text: "Certified v1 - cannot be a native v2 subagent",
+      tooltip: "",
+      urgent: false
+    };
+  // The registry's own claim outranks any local record: a certifying entry
+  // (multiAgentVersion "v2") is proven even while its machine proof waits, and
+  // a stale local record cannot take that away.
+  if (entry.multiAgentVersion === "v2")
+    return { kind: "proven", text: "Proven v2", tooltip: "", urgent: false };
   var status = String(asObject(proof).status || "");
   if (status === "checking")
     return { kind: "checking", text: "Working…", tooltip: "", urgent: false };
@@ -130,8 +167,14 @@ function proofBadge(entry, visible, proof) {
       urgent: true
     };
   }
-  if (entry.multiAgentVersion === "v2")
-    return { kind: "proven", text: "Proven v2", tooltip: "", urgent: false };
+  if (status === "candidate")
+    return { kind: "candidate", text: "Probe passed — awaiting certification", tooltip: "", urgent: false };
+  if (status === "verified")
+    return { kind: "verified", text: "Certified on this machine", tooltip: "", urgent: false };
+  if (status === "experimental")
+    return { kind: "legacy-experimental", text: "Legacy evidence, not a v2 claim", tooltip: "", urgent: false };
+  if (status === "proven")
+    return { kind: "legacy-proven", text: "Legacy evidence, not a v2 claim", tooltip: "", urgent: false };
   return { kind: "untested", text: "Untested", tooltip: "", urgent: false };
 }
 
@@ -152,6 +195,7 @@ function viewModel(target, options) {
     disabled: setOf(subagentSettings.disabled),
     selected: setOf(subagentSettings.enabled)
   };
+  var subagentMode = String(subagentSettings.mode || "proven");
   var proofs = asObject(subagentSettings.proofs);
   var hidden = setOf(asObject(modelSettings.picker).hidden);
   var names = providerNames(snapshot);
@@ -167,8 +211,10 @@ function viewModel(target, options) {
     var slug = String(entry.slug);
     var providerId = String(entry.provider || "unknown");
     var visible = isVisible(entry, hidden, overrides);
-    var subagentOn = isSubagentOn(entry, visible, subagentState, overrides);
-    var badge = proofBadge(entry, visible, proofs[slug]);
+    var subagentOn = isSubagentOn(entry, visible, subagentState, subagentMode, overrides);
+    var proof = asObject(proofs[slug]);
+    var badge = proofBadge(entry, visible, proof);
+    var v1SubagentCertified = hasV1SubagentCertification(entry);
 
     totals.models++;
     if (visible) totals.pickerVisible++;
@@ -180,6 +226,7 @@ function viewModel(target, options) {
       displayName: plainText(entry.displayName || slug, 64),
       providerId: providerId,
       secondary: pickerRow ? plainText(slug, 96) : badge.text,
+      caption: pickerRow ? pickerCaption(entry) : "",
       badgeKind: pickerRow ? "" : badge.kind,
       badgeTooltip: pickerRow ? "" : badge.tooltip,
       badgeUrgent: pickerRow ? false : badge.urgent,
@@ -187,11 +234,19 @@ function viewModel(target, options) {
       // The interlock is shown, not worked around: a hidden model keeps its
       // row and its explanation, and its subagent toggle is inert rather
       // than silently unhiding the model.
-      interlocked: !pickerRow && !visible,
-      toggleEnabled: pickerRow || visible,
+      // Repository v1 is the second interlock. Where both apply, the picker
+      // wins, because unhiding is the action that is actually available.
+      interlocked: !pickerRow && (!visible || v1SubagentCertified),
+      interlockActionable: !pickerRow && !visible,
+      interlockTooltip: !pickerRow && !visible
+        ? "Hidden in the picker — open Picker to show it again."
+        : (!pickerRow && v1SubagentCertified
+            ? "Certified v1 — this catalog model cannot be a native v2 subagent."
+            : ""),
+      toggleEnabled: pickerRow || (visible && !v1SubagentCertified),
       // Only a badge somebody is looking at earns the short-interval
       // re-read: Picker draws no badge, and a collapsed group draws no row.
-      checking: !pickerRow && badge.kind === "checking"
+      checking: !pickerRow && visible && String(proof.status || "") === "checking"
     };
 
     if (!byProvider[providerId]) {
@@ -231,8 +286,9 @@ function viewModel(target, options) {
   return {
     setting: setting,
     empty: totals.models === 0,
-    mode: String(subagentSettings.mode || "proven"),
-    allProven: subagentSettings.mode === "all",
+    mode: subagentMode,
+    allCatalogModels: subagentMode === "all",
+    hasSelection: asArray(subagentSettings.enabled).length > 0,
     anyChecking: anyChecking,
     totals: totals,
     groups: groups
