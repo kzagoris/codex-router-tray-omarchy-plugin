@@ -84,6 +84,18 @@ Item {
   // Facade surface for what the transports own but consumers read here.
   readonly property alias callerSecret: invokeClient.callerSecret
   readonly property alias hasCallerSecret: invokeClient.hasCallerSecret
+
+  // Re-read a caller key that was missing at startup. Reader-driven: the
+  // panel asks on open and on Refresh, nothing polls (see InvokeClient).
+  function recheckCallerSecret() {
+    invokeClient.recheckCallerSecret()
+  }
+
+  // The read lands asynchronously, after the refresh that asked for it has
+  // already given up for want of a key. dataTimer has no triggeredOnStart,
+  // so without this the panel would sit empty for a whole data interval
+  // after the key it was waiting for arrived.
+  onHasCallerSecretChanged: if (root.hasCallerSecret && root.panelOpen) root.refreshData()
   readonly property alias mutationRunning: controlProcess.mutationRunning
   readonly property alias mutationLabel: controlProcess.mutationLabel
   readonly property alias mutationError: controlProcess.mutationError

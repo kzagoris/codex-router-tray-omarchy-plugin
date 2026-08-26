@@ -60,6 +60,21 @@ Item {
     }
   }
 
+  // watchChanges watches the file, not the directory: a key that did not
+  // exist when the shell started (fresh install, or `./bin/doctor --fix`
+  // writing it afterwards) is never seen again, and the panel keeps advising
+  // a fix that has already run. Nothing polls for it — the reader asks, on
+  // panel open and on Refresh (see Panel.refreshNow).
+  //
+  // Only while the key is missing: a key we already hold is re-read by the
+  // watch, or by the reload after a 401, and rereading it here would race
+  // that.
+  function recheckCallerSecret() {
+    if (root.callerSecretPath === "") return
+    if (root.hasCallerSecret || root._authReloading) return
+    secretFile.reload()
+  }
+
   // ------------------------------------------------------------- health
 
   property var _inFlight: null

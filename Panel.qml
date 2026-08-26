@@ -115,6 +115,10 @@ Panel {
 
   function refreshNow() {
     if (!root.service) return
+    // A key written after the shell started is invisible until somebody
+    // asks for it again; panel open and Refresh are the two moments a
+    // reader is actually waiting on the answer.
+    root.service.recheckCallerSecret()
     root.service.pollHealth()
     root.service.refreshData()
   }
@@ -156,7 +160,7 @@ Panel {
     if (!service || service.routerState === "offline")
       return "Router offline — start it with systemctl --user start codex-router."
     if (!service.hasCallerSecret)
-      return "Caller key missing or unreadable — run ./bin/doctor --fix to restore it."
+      return "Caller key missing or unreadable — recreate it below, or run ./bin/doctor --fix."
     if (service.dataError !== "") return service.dataError
     if (service.degraded)
       return "Degraded providers: " + service.degradedNames.join(", ")
@@ -298,24 +302,53 @@ Panel {
           BorderSurface {
             visible: root.statusMessage !== ""
             width: parent.width
-            implicitHeight: statusText.implicitHeight + Style.spacing.xl * 2
+            implicitHeight: statusColumn.implicitHeight + Style.spacing.xl * 2
             color: root.alpha(root.urgent, 0.10)
             borderSpec: Border.flat(root.alpha(root.urgent, 0.35), 1)
             radius: Style.cornerRadius
 
-            Text {
-              textFormat: Text.PlainText
-              id: statusText
+            Column {
+              id: statusColumn
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(12)
               anchors.rightMargin: Style.space(12)
-              text: root.statusMessage
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
+              spacing: Style.spacing.md
+
+              Text {
+                textFormat: Text.PlainText
+                id: statusText
+                width: parent.width
+                text: root.statusMessage
+                // Full-strength foreground: the urgent tint of the box is
+                // already faint, and dim text on it is close to unreadable.
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              // A missing key is the one status the panel can repair itself,
+              // so the box carries the repair instead of quoting a terminal
+              // command. doctor --fix regenerates the key and settles the
+              // rest of the install; the read below picks the new key up.
+              Button {
+                readonly property bool mine: root.activeControlKey === "recreate-key"
+                  && !!root.service && root.service.mutationRunning
+
+                visible: !!root.service && root.service.online && !root.service.hasCallerSecret
+                width: parent.width
+                text: mine ? "Recreating key…" : "Recreate caller key"
+                tooltipText: "Runs doctor --fix to regenerate the router caller key"
+                enabled: !!root.service && !root.service.mutationRunning
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.runAction("maintenance", "recreate-key", "Recreating caller key",
+                  ["doctor", "--fix", "--json"])
+              }
             }
           }
 
