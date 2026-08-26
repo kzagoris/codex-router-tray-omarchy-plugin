@@ -186,6 +186,14 @@ Item {
     return targets && targets.codex ? targets.codex : {}
   }
 
+  // Top-level overview facts the Status view reads once, shaped here so the
+  // view binds to names rather than snapshot paths. chatgptSession rides in
+  // the same overview snapshot as `catalog`; old routers omit both.
+  readonly property var chatgptSession: root.snapshot && root.snapshot.chatgptSession
+    ? root.snapshot.chatgptSession : ({})
+  readonly property var catalog: root.snapshot && root.snapshot.catalog
+    ? root.snapshot.catalog : ({})
+
   // Everything the router says eventually lands in a Text item or in the
   // shell's shared tooltip, and neither should interpret it as markup: Qt's
   // default AutoText sniffs strings for rich text, so a provider name

@@ -57,6 +57,14 @@ Item {
   readonly property bool toolResultAgingOn: statusRoot.toolResultAging.enabled === true
   readonly property bool toolResultAgingForced: statusRoot.toolResultAging.environmentOverride === true
 
+  // One dim line for the ChatGPT session projection, one for the router's
+  // managed default model. Both are informational for this plugin's
+  // operator: the codex target's own pass-through is unaffected by session
+  // sharing, and the default model is a router pin, not a control here.
+  readonly property string chatgptSessionLine: statusRoot.service
+    ? Model.chatgptSessionSummary(statusRoot.service.chatgptSession) : ""
+  readonly property string routerDefaultLine: Model.routerDefaultCatalogModelSummary(statusRoot.codexTarget)
+
   height: column.implicitHeight
 
   function formatElapsed(ms) {
@@ -144,6 +152,30 @@ Item {
         dim: statusRoot.dim
         urgent: statusRoot.urgent
         fontFamily: statusRoot.fontFamily
+      }
+
+      // Informational rows beneath the switches: facts the operator can only
+      // see today by opening the router's own Control Center. Not toggles.
+      Text {
+        textFormat: Text.PlainText
+        visible: statusRoot.chatgptSessionLine !== ""
+        width: parent.width
+        text: statusRoot.chatgptSessionLine
+        color: statusRoot.dim
+        font.family: statusRoot.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: statusRoot.routerDefaultLine !== ""
+        width: parent.width
+        text: statusRoot.routerDefaultLine
+        color: statusRoot.dim
+        font.family: statusRoot.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
     }
 
