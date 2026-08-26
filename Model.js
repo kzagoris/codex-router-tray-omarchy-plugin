@@ -173,6 +173,9 @@ function dailySeries(buckets, days, today) {
 
 // ChatGPT quota metrics arrive with prose labels ("5-hour window", "Weekly
 // limit") or canonical durations; normalize both to one of three windows.
+// Anything else keeps the router's own label as a generic window instead of
+// being dropped: opencode's rolling window carries no duration, and a future
+// window must not need a new pattern to reach a card.
 function quotaWindow(metric) {
   if (!metric || (metric.kind && metric.kind !== "quota")) return null;
   var label = String(metric.label || "").toLowerCase().replace(/[–—]/g, "-");
@@ -184,7 +187,13 @@ function quotaWindow(metric) {
     return { key: "weekly", label: "Weekly limit" };
   if (label.indexOf("month") >= 0 || minutes === 43200)
     return { key: "monthly", label: "Monthly limit" };
-  return null;
+  var sanitized = plainText(metric.label || "", 64);
+  var genericLabel = sanitized === "" ? "Usage" : sanitized;
+  return {
+    key: "generic:" + genericLabel.toLowerCase(),
+    kind: "generic",
+    label: genericLabel
+  };
 }
 
 function metricPercent(metric) {
@@ -206,6 +215,104 @@ function metricRemainingPercent(metric) {
   if (direct !== null) return direct;
   var used = metricPercent(metric);
   return used === null ? null : 100 - used;
+}
+
+// A genuine percentage on a balance metric (OpenRouter's pay-as-you-go
+// carries one alongside its value) is kept, but a balance never gets one
+// invented for it.
+function metricUsedPercent(metric) {
+  if (!metric) return null;
+  if (metric.kind === "quota") return metricPercent(metric);
+  if (metric.usedPercent === undefined || metric.usedPercent === null
+      || metric.usedPercent === "") return null;
+  return clampPercent(metric.usedPercent);
+}
+
+// Balance rows answer "what will fund my next request", which is a value, not
+// a percentage. Renders the router's own per-metric fields only; nothing is
+// derived or fabricated here.
+function buildBalanceRows(sources) {
+  var providerUsage = sources && sources.providerUsage;
+  var providerSetup = sources && sources.providerSetup;
+  var rows = [];
+  var seen = {};
+  var configured = {};
+  var setupProviders = providerSetup && Array.isArray(providerSetup.providers) ? providerSetup.providers : [];
+  for (var s = 0; s < setupProviders.length; s++)
+    if (setupProviders[s] && setupProviders[s].configured) configured[setupProviders[s].id] = true;
+
+  var usageProviders = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  for (var u = 0; u < usageProviders.length; u++) {
+    var provider = usageProviders[u];
+    if (!provider || !configured[provider.id]) continue;
+    var metrics = provider.account && Array.isArray(provider.account.metrics) ? provider.account.metrics : [];
+    for (var m = 0; m < metrics.length; m++) {
+      var metric = metrics[m];
+      if (!metric || (metric.kind && metric.kind !== "balance")) continue;
+      if (metric.value === undefined || metric.value === null || metric.value === "") continue;
+      var value = Number(metric.value);
+      if (!isFinite(value)) continue;
+      var key = provider.id + ":" + plainText(String(metric.label || "balance"), 64);
+      if (seen[key]) continue;
+      seen[key] = true;
+      var usedPercent = metricUsedPercent(metric);
+      var row = {
+        key: key,
+        providerId: provider.id,
+        providerName: plainText(provider.displayName || provider.id, 64),
+        source: "provider",
+        label: plainText(String(metric.label || "Balance"), 64),
+        value: value,
+        valueText: formatAmount(value, metric.currency),
+        currency: typeof metric.currency === "string" && metric.currency !== ""
+          ? metric.currency : "",
+        detail: plainText(String(metric.detail || ""), 160),
+        available: metric.available !== false
+      };
+      if (usedPercent !== null) row.usedPercent = usedPercent;
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+// Account plan and operator-facing note, surfaced only when this provider's
+// payload actually supplies them. The message is router prose, treated as
+// plain text: control characters flattened, markup stripped, length clamped.
+function buildAccountNotes(sources) {
+  var providerUsage = sources && sources.providerUsage;
+  var providerSetup = sources && sources.providerSetup;
+  var notes = [];
+  var configured = {};
+  var setupProviders = providerSetup && Array.isArray(providerSetup.providers) ? providerSetup.providers : [];
+  for (var s = 0; s < setupProviders.length; s++)
+    if (setupProviders[s] && setupProviders[s].configured) configured[setupProviders[s].id] = true;
+
+  var usageProviders = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  for (var u = 0; u < usageProviders.length; u++) {
+    var provider = usageProviders[u];
+    if (!provider || !configured[provider.id] || !provider.account) continue;
+    var plan = plainText(String(provider.account.plan || ""), 64);
+    var message = plainText(String(provider.account.message || ""), 320);
+    if (plan === "" && message === "") continue;
+    notes.push({
+      key: provider.id,
+      providerId: provider.id,
+      providerName: plainText(provider.displayName || provider.id, 64),
+      plan: plan,
+      message: message
+    });
+  }
+  return notes;
+}
+
+// "12.50" / "4" / "1.25" — money and credit values keep up to two decimals;
+// plain counters stay whole so "4 VCU" does not read as "4.00 VCU".
+function formatAmount(value, currency) {
+  var number = Number(value);
+  if (!isFinite(number)) return "";
+  var text = number.toFixed(2).replace(/\.00$/, "");
+  return String(currency || "").toLowerCase() === "usd" ? number.toFixed(2) : text;
 }
 
 // Quota cards from every source that has them: the account_usage call when it
@@ -230,7 +337,7 @@ function buildQuotaCards(sources) {
       providerId: providerId,
       providerName: providerName,
       source: source,
-      window: win.key,
+      window: win.kind || win.key,
       label: win.label,
       usedPercent: metricPercent(metric),
       remainingPercent: metricRemainingPercent(metric),

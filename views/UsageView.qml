@@ -5,9 +5,10 @@ import "../Model.js" as Model
 import "../ui"
 
 // USAGE view: what the router has spent. Limits (when the operator opted in
-// to the ChatGPT account call), tokens by day for the selected provider, and
-// the by-provider roll-up — the charts share one screen instead of competing
-// with unrelated controls.
+// to the ChatGPT account call), tokens by day for the selected provider, the
+// by-provider roll-up, plus the funding and account facts the router already
+// sends in provider usage — balances answer "what will fund my next request"
+// and are value-only unless the metric carries a genuine used-percent.
 //
 // The panel hands over the service, the live clock and the palette. The
 // provider selection is session-scoped state owned here: it survives a
@@ -111,7 +112,7 @@ Item {
 
   // Quota windows come from the slow account call plus whatever the usage
   // payload carries locally; both sources dedupe inside buildQuotaCards.
-  readonly property var quotaCards: (service && service.accountUsageEnabled && service.accountUsage)
+  readonly property var quotaCards: (service && service.accountUsageEnabled)
     ? Model.buildQuotaCards({
         account: service.accountUsage,
         providerUsage: service.providerUsage,
@@ -121,6 +122,22 @@ Item {
 
   readonly property bool quotaUnavailable: !!service && service.accountUsageEnabled
     && !service.accountUsage && service.accountUsageFailed
+
+  // Balances come straight out of provider_usage: no slow account call, so
+  // they are safe to show whenever a configured provider reports them.
+  readonly property var balanceRows: (service && service.providerUsage)
+    ? Model.buildBalanceRows({
+        providerUsage: service.providerUsage,
+        providerSetup: service.providerSetup
+      })
+    : []
+
+  readonly property var accountNotes: (service && service.providerUsage)
+    ? Model.buildAccountNotes({
+        providerUsage: service.providerUsage,
+        providerSetup: service.providerSetup
+      })
+    : []
 
   height: column.implicitHeight
 
@@ -138,7 +155,8 @@ Item {
     Text {
       textFormat: Text.PlainText
       visible: usageRoot.service && usageRoot.service.dataLoading && !usageRoot.selectedProvider
-        && usageRoot.quotaCards.length === 0
+        && usageRoot.quotaCards.length === 0 && usageRoot.balanceRows.length === 0
+        && usageRoot.accountNotes.length === 0
       width: parent.width
       topPadding: Style.space(6)
       text: "Reading router state…"
@@ -152,6 +170,7 @@ Item {
       textFormat: Text.PlainText
       visible: !!usageRoot.service && !usageRoot.service.dataLoading
         && usageRoot.trafficProviders.length === 0 && usageRoot.quotaCards.length === 0
+        && usageRoot.balanceRows.length === 0 && usageRoot.accountNotes.length === 0
       width: parent.width
       topPadding: Style.space(6)
       text: "Router online — no routed traffic yet.\nUsage shows up after the first request."
@@ -282,6 +301,148 @@ Item {
         font.family: usageRoot.fontFamily
         font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
+      }
+    }
+
+    // ---------- Funding (provider-reported balances) ----------
+    Column {
+      visible: usageRoot.balanceRows.length > 0
+      width: parent.width
+      spacing: Style.space(8)
+
+      PanelSectionHeader {
+        width: parent.width
+        text: "FUNDING"
+        foreground: usageRoot.foreground
+        fontFamily: usageRoot.fontFamily
+      }
+
+      Repeater {
+        model: usageRoot.balanceRows
+
+        Column {
+          id: balanceRow
+          required property var modelData
+          width: parent.width
+          spacing: Style.space(2)
+
+          Item {
+            width: parent.width
+            implicitHeight: balanceLabel.implicitHeight
+
+            Text {
+              textFormat: Text.PlainText
+              id: balanceLabel
+              text: balanceRow.modelData.providerName + " · " + balanceRow.modelData.label
+              color: usageRoot.foreground
+              font.family: usageRoot.fontFamily
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+              anchors.left: parent.left
+              anchors.right: balanceValue.left
+              anchors.rightMargin: Style.spacing.sm
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              id: balanceValue
+              text: balanceRow.modelData.valueText
+                + (balanceRow.modelData.currency !== ""
+                   ? " " + balanceRow.modelData.currency : "")
+              color: balanceRow.modelData.available === false
+                ? usageRoot.dim : usageRoot.foreground
+              font.family: usageRoot.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+              anchors.right: parent.right
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: balanceRow.modelData.available === false
+            width: parent.width
+            text: "Unavailable"
+            color: usageRoot.urgent
+            font.family: usageRoot.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: balanceRow.modelData.detail !== ""
+            width: parent.width
+            text: balanceRow.modelData.detail
+            color: usageRoot.dim
+            font.family: usageRoot.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Meter {
+            width: parent.width
+            visible: balanceRow.modelData.usedPercent !== undefined
+              && balanceRow.modelData.usedPercent !== null
+            value: balanceRow.modelData.usedPercent !== undefined
+              && balanceRow.modelData.usedPercent !== null
+              ? balanceRow.modelData.usedPercent / 100 : -1
+            alarming: balanceRow.modelData.usedPercent !== undefined
+              && balanceRow.modelData.usedPercent !== null
+              && balanceRow.modelData.usedPercent >= 90
+            foreground: usageRoot.foreground
+            urgent: usageRoot.urgent
+            track: usageRoot.track
+          }
+        }
+      }
+    }
+
+    // ---------- Account notes (plan / operator message) ----------
+    Column {
+      visible: usageRoot.accountNotes.length > 0
+      width: parent.width
+      spacing: Style.space(8)
+
+      PanelSectionHeader {
+        width: parent.width
+        text: "ACCOUNTS"
+        foreground: usageRoot.foreground
+        fontFamily: usageRoot.fontFamily
+      }
+
+      Repeater {
+        model: usageRoot.accountNotes
+
+        Column {
+          id: noteRow
+          required property var modelData
+          width: parent.width
+          spacing: Style.space(2)
+
+          Text {
+            textFormat: Text.PlainText
+            text: noteRow.modelData.providerName
+              + (noteRow.modelData.plan !== "" ? " · " + noteRow.modelData.plan : "")
+            color: usageRoot.foreground
+            font.family: usageRoot.fontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
+            width: parent.width
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: noteRow.modelData.message !== ""
+            width: parent.width
+            text: noteRow.modelData.message
+            // A router "not permitted to call the API" line is a
+            // caution, not a fact to decorate with styling.
+            color: usageRoot.urgent
+            font.family: usageRoot.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
       }
     }
 
