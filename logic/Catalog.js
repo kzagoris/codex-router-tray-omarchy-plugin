@@ -13,10 +13,18 @@
 //     enabled providers;
 //   - picker visibility is the hidden list from modelSettings.picker;
 //   - a model is subagent-on when it is visible, not explicitly switched
-//     off, and either registry/machine-proven (multiAgentVersion "v2") or
-//     explicitly selected. The "all proven models" mode is a separate
-//     switch, not a clause here — the router resolves eligibility from the
-//     same three facts whichever mode is set.
+//     off, and either registry-proven (multiAgentVersion "v2") or promoted
+//     by the mode the switch wrote: `all`, or `selected` for models on the
+//     operator's own enabled list. `proven` promotes nothing of its own, so
+//     the enabled list stays on screen only while a mode that reads it is
+//     live — the same three-clause rule the router's applyMultiAgentSettings
+//     applies.
+//
+// Presentation metadata rides in row fields only: a synthesized native
+// context variant (`nativeClientManaged: false`) is a router-managed picker
+// entry, not a separate subagent governance fact, and `isFree` is a price
+// tag. Neither takes part in membership, counts, badges or the interlock —
+// the badges stay exactly as 003/005 drew them.
 //
 // Plain script on purpose: QML loads this with `import "logic/Catalog.js"`,
 // so no imports and no exports. Everything is defensive; router payloads are

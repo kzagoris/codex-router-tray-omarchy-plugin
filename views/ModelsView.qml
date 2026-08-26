@@ -429,16 +429,20 @@ Item {
       width: parent.width
       visible: modelsRoot.controlsReachable && !modelsRoot.viewModel.empty
         && !modelsRoot.pickerSetting
-      label: "All proven models"
-      description: "Expose every verified v2 model as a Codex subagent."
-      checked: modelsRoot.viewModel.allProven
+      label: "Every catalog model as a subagent"
+      description: "Expose every catalog model visible in the picker, including routes that have never been shown to work as a subagent."
+      checked: modelsRoot.viewModel.allCatalogModels
       foreground: modelsRoot.foreground
       accent: Color.accent
       fontFamily: modelsRoot.fontFamily
       onClicked: modelsRoot.runBulk("subagents:mode",
-        modelsRoot.viewModel.allProven ? "Switching to proven-only subagents"
-          : "Switching to all proven models",
-        ["subagents", "mode", modelsRoot.viewModel.allProven ? "proven" : "all"])
+        modelsRoot.viewModel.allCatalogModels
+          ? (modelsRoot.viewModel.hasSelection
+              ? "Switching to your selected subagents"
+              : "Switching to registry-certified subagents")
+          : "Switching to every catalog model as a subagent",
+        ["subagents", "mode", modelsRoot.viewModel.allCatalogModels
+          ? (modelsRoot.viewModel.hasSelection ? "selected" : "proven") : "all"])
     }
 
     // ---------- Bulk actions over the whole list ----------
@@ -561,8 +565,8 @@ Item {
             dim: modelsRoot.dim
             fontFamily: modelsRoot.fontFamily
             onToggleRequested: modelsRoot.toggleRow(modelData)
-            // The interlock explains itself and then takes the operator to
-            // where the cause can be fixed. It never unhides the model.
+            // Only the hidden-in-picker interlock emits this action; the v1
+            // certification interlock explains itself and remains inert.
             onInterlockRequested: modelsRoot.showPicker()
           }
         }
