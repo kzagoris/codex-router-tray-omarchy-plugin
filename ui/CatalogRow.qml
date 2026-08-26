@@ -11,22 +11,21 @@ import qs.Ui
 // proof badge and the switch is eligibility. The row is presentation only:
 // every string, the toggled state and the enabled/disabled pair are computed
 // by logic/Catalog.js and bound in by the view, and intent leaves through
-// `toggleRequested` and `interlockRequested`.
+// `toggleRequested` and, where the cause is actionable, `interlockRequested`.
 Item {
   id: crow
 
   // The row's view model (see logic/Catalog.js): slug, displayName,
-  // secondary, badgeKind/badgeTooltip/badgeUrgent, on, toggleEnabled,
-  // interlocked.
+  // secondary, caption, badgeKind/badgeTooltip/badgeUrgent, on,
+  // toggleEnabled, interlocked, interlockActionable/interlockTooltip.
   property var row: null
 
   // Offline-or-mutating gate, owned by the view.
   property bool locked: false
 
   signal toggleRequested()
-  // A row whose subagent toggle is inert because the model is hidden from
-  // the picker: clicking it goes where the cause can be fixed rather than
-  // unhiding the model behind the operator's back.
+  // A hidden row can navigate to Picker, where its cause can be fixed. Other
+  // interlocks (repository-certified v1) explain themselves but are inert.
   signal interlockRequested()
 
   // Palette, handed over by the view that mounts the row.
@@ -36,6 +35,8 @@ Item {
   property string fontFamily: Style.font.family
 
   readonly property bool interlocked: !!crow.row && crow.row.interlocked === true
+  readonly property bool interlockActionable: !!crow.row
+    && crow.row.interlockActionable === true
   readonly property bool switchEnabled: !!crow.row && crow.row.toggleEnabled === true
     && !crow.locked
 
@@ -72,6 +73,19 @@ Item {
       font.pixelSize: Style.font.caption
       elide: Text.ElideRight
     }
+
+    // Picker-only presentation metadata, one short caption: free routes and
+    // the synthesized native context variants the router manages itself.
+    Text {
+      textFormat: Text.PlainText
+      visible: crow.row && String(crow.row.caption) !== ""
+      width: parent.width
+      text: crow.row ? String(crow.row.caption) : ""
+      color: crow.dim
+      font.family: crow.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
   }
 
   ToggleSwitch {
@@ -91,9 +105,9 @@ Item {
     hoverEnabled: true
     // Only the interlocked row answers a click, and it answers by navigating,
     // never by changing a setting.
-    acceptedButtons: crow.interlocked ? Qt.LeftButton : Qt.NoButton
-    cursorShape: crow.interlocked ? Qt.PointingHandCursor : Qt.ArrowCursor
-    onClicked: if (crow.interlocked) crow.interlockRequested()
+    acceptedButtons: crow.interlockActionable ? Qt.LeftButton : Qt.NoButton
+    cursorShape: crow.interlockActionable ? Qt.PointingHandCursor : Qt.ArrowCursor
+    onClicked: if (crow.interlockActionable) crow.interlockRequested()
   }
 
   PanelToolTip {
@@ -101,7 +115,7 @@ Item {
       && (crow.interlocked
           || (!!crow.row && String(crow.row.badgeTooltip) !== ""))
     text: crow.interlocked
-      ? "Hidden in the picker — open Picker to show it again."
+      ? String(crow.row.interlockTooltip || "")
       : (crow.row ? String(crow.row.badgeTooltip) : "")
     fontFamily: crow.fontFamily
   }
