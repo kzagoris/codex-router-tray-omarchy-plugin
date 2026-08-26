@@ -11,13 +11,98 @@
 // no caller left.
 //
 // Everything is defensive: router payload shapes are verified against
-// 0.4.0-beta.4 but every accessor tolerates absence.
+// 0.5.0 but every accessor tolerates absence.
 
 var DAY_MS = 24 * 60 * 60 * 1000;
 
 var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Router health names its own subsystems in the `degraded` array; the
+// surface says what they are instead of echoing raw identifiers as if they
+// were providers. The set is fixed in codex-router 0.5.0, and anything new
+// passes through as-is rather than being swallowed.
+var DEGRADED_NAMES = {
+  oauth: "Kimi OAuth forwarder",
+  grokOauth: "Grok OAuth forwarder",
+  api: "API forwarder",
+  gateway: "Gateway"
+};
+
+var DEGRADED_SENTENCE_MAX = 200;
+
+// The same strip-and-clamp Catalog.js applies to router prose; duplicated
+// here because Model.js cannot import the other pure module.
+function plainText(value, max) {
+  var text = String(value === undefined || value === null ? "" : value);
+  text = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  text = text.replace(/[<>&]/g, "");
+  text = text.replace(/\s+/g, " ").trim();
+  var limit = max > 0 ? max : DEGRADED_SENTENCE_MAX;
+  return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+}
+
+function degradedSentence(names, max) {
+  var list = Array.isArray(names) ? names : [];
+  if (list.length === 0) return "";
+  var parts = [];
+  for (var i = 0; i < list.length; i++) {
+    var raw = String(list[i]);
+    var name = Object.prototype.hasOwnProperty.call(DEGRADED_NAMES, raw)
+      ? DEGRADED_NAMES[raw] : raw;
+    parts.push(plainText(name, 80));
+  }
+  return plainText("Degraded: " + parts.join(", "), max);
+}
+
+// The overview snapshot's ChatGPT-session projection: explicit sharing
+// consent and session usability are separate facts, and expiresInHours is the
+// one perishable number an operator cannot get anywhere else on the desktop.
+// One dim Status line, absent payload hidden — an old router must not read as
+// "no session found".
+function chatgptSessionSummary(session) {
+  if (!session || typeof session !== "object") return "";
+  var sharing = String(session.sharing || "");
+  var state = String(session.session || "");
+  var present = session.present === true;
+  var hasExpiry = session.expiresInHours !== undefined && session.expiresInHours !== null;
+  if (sharing === "" && state === "" && !present && !hasExpiry) return "";
+
+  var parts = [];
+  if (sharing === "enabled" || sharing === "disabled") parts.push("Sharing " + sharing);
+  if (state === "usable" || state === "expired" || state === "unavailable")
+    parts.push("Session " + state);
+  else if (present) parts.push("Session present");
+  var expiry = boundedExpiry(session.expiresInHours);
+  if (expiry !== "") parts.push("expires " + expiry);
+  if (parts.length === 0) return "No ChatGPT session found";
+  return plainText(parts.join(" · "), 160);
+}
+
+// A session's `expiresInHours` is an estimate, so the surface says so and
+// caps it: no unbounded figure, no false precision, nothing after 30 days.
+function boundedExpiry(hours) {
+  var value = Number(hours);
+  if (!isFinite(value) || value <= 0) return "";
+  if (value < 1) return "under an hour";
+  if (value < 48) return "~" + Math.max(1, Math.round(value)) + "h";
+  if (value < 720) return "~" + Math.round(value / 24) + "d";
+  return "30+ days";
+}
+
+// The codex target's router-managed default model. Both facts are informational
+// for this plugin: the operator can see what the router pins, not change it.
+function routerDefaultCatalogModelSummary(target) {
+  var block = target && typeof target === "object" ? target : {};
+  var slug = String(block.routerDefaultModel || "");
+  var managed = block.routerDefaultManaged === true;
+  if (slug === "" && !managed) return "";
+  var text = slug !== ""
+    ? "Default route: " + slug + (managed ? " (router-managed)" : "")
+    : "Router-managed default catalog model";
+  return plainText(text, 160);
+}
 
 // Percent of an allowance used, clamped to 0..100; null when unusable.
 function clampPercent(value) {

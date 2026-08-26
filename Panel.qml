@@ -146,7 +146,7 @@ Panel {
     if (state === "offline") return "OFFLINE"
     if (state === "generating") return "GENERATING · " + service.activeCount + " ACTIVE"
     if (state === "error") {
-      var names = service.degradedNames.join(", ")
+      var names = Model.degradedSentence(service.degradedNames).replace(/^Degraded: /, "")
       return (names !== "" ? "DEGRADED: " + names : "ERROR").toUpperCase()
     }
     var version = service.version
@@ -163,7 +163,7 @@ Panel {
       return "Caller key missing or unreadable — recreate it below, or run ./bin/doctor --fix."
     if (service.dataError !== "") return service.dataError
     if (service.degraded)
-      return "Degraded providers: " + service.degradedNames.join(", ")
+      return Model.degradedSentence(service.degradedNames)
     return ""
   }
 

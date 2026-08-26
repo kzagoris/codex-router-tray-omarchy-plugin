@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 // Codex Router bar widget: a router glyph with an overlaid status dot, plus
 // the host for the router panel.
@@ -112,12 +113,14 @@ BarWidget {
     if (router.routerState === "generating")
       return "Codex Router — generating (" + router.activeCount + " active)"
     if (router.routerState === "error") {
-      // Each name is already stripped at the source; the joined list still
-      // needs a ceiling so a router reporting hundreds of degraded providers
-      // cannot hand the shell's tooltip an unbounded string.
-      var names = router.plainText(router.degradedNames.join(", "), 200)
-      var base = names !== "" ? "Codex Router — degraded: " + names : "Codex Router — error"
-      return router.activeCount > 0 ? base + " (" + router.activeCount + " active)" : base
+      // The helper already caps the whole sentence at 200; the outer clamp
+      // keeps the shell's tooltip bound no matter how the helper is called.
+      var degradationText = Model.degradedSentence(router.degradedNames)
+      var base = degradationText !== ""
+        ? "Codex Router — " + degradationText : "Codex Router — error"
+      var complete = router.activeCount > 0
+        ? base + " (" + router.activeCount + " active)" : base
+      return router.plainText(complete, 200)
     }
     if (router.routerState === "idle")
       return "Codex Router — idle" + (router.version !== "" ? " · v" + router.version : "")
