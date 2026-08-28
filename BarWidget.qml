@@ -30,13 +30,47 @@ BarWidget {
     portOverride: root.routerPortSetting
     dataIntervalSec: root.dataIntervalSec
     stateDirOverride: root.stateDirSetting
-    sourceRootOverride: root.sourceRootSetting
     accountUsageEnabled: root.accountUsageWanted
+  }
+
+  // Mutations are a sibling of the reader: the Panel and Models view receive
+  // this process directly. This composition retains the interim "mutate,
+  // then re-read" policy until RouterService receives semantic outcomes.
+  ControlProcess {
+    id: control
+    sourceRootOverride: root.sourceRootSetting
+  }
+
+  Connections {
+    target: control
+
+    function onJobSucceeded(args) {
+      // Service commands bounce the daemon, so an immediate read races it.
+      // Ordinary mutations reconcile immediately unless Models is draining
+      // its coalesced queue.
+      if (control.isServiceCommand(args)) {
+        serviceRefreshTimer.restart()
+      } else if (!control.deferAutoRefresh) {
+        router.pollHealth()
+        router.refreshData()
+      }
+    }
+  }
+
+  Timer {
+    id: serviceRefreshTimer
+    interval: 3000
+    repeat: false
+    onTriggered: {
+      router.pollHealth()
+      router.refreshData()
+    }
   }
 
   // Cross-file access goes through an explicit property: ids are file-scoped,
   // so Panel.qml cannot reach `router` by name (see refresh()).
   readonly property alias routerService: router
+  readonly property alias controlProcess: control
 
   // ------------------------------------------------------------ settings
 

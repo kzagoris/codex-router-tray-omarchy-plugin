@@ -17,6 +17,7 @@ Item {
   // ------------------------------------------------------------- contract
 
   property var service: null
+  property var controlProcess: null
   property var panel: null
   property double nowMs: 0
 
@@ -35,7 +36,8 @@ Item {
   // True while nothing user-facing should accept clicks: the router is
   // unreachable or a mutation is already running. Service start is the one
   // action exempt by design (see runAction on the panel).
-  readonly property bool actionsLocked: !service || !service.online || service.mutationRunning
+  readonly property bool actionsLocked: !service || !service.online
+    || !controlProcess || controlProcess.mutationRunning
 
   // One guard for every section that needs live, authenticated data.
   readonly property bool controlsReachable: !!service && service.online
@@ -148,7 +150,7 @@ Item {
       ActionNotice {
         width: parent.width
         notice: statusRoot.panel ? statusRoot.panel.domainNotice("modes") : ""
-        running: !!statusRoot.service && statusRoot.service.mutationRunning
+        running: !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
         dim: statusRoot.dim
         urgent: statusRoot.urgent
         fontFamily: statusRoot.fontFamily
@@ -304,9 +306,9 @@ Item {
         visible: !statusRoot.service || !statusRoot.service.online
         width: parent.width
         readonly property bool mine: !!statusRoot.panel && statusRoot.panel.activeControlKey === "start"
-          && !!statusRoot.service && statusRoot.service.mutationRunning
+          && !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
         text: mine ? "Starting…" : "Start service"
-        enabled: !!statusRoot.service && !statusRoot.service.mutationRunning
+        enabled: !!statusRoot.service && !!statusRoot.controlProcess && !statusRoot.controlProcess.mutationRunning
         bordered: true
         foreground: statusRoot.foreground
         fontFamily: statusRoot.fontFamily
@@ -325,7 +327,7 @@ Item {
         Button {
           width: parent.cellWidth
           readonly property bool mine: !!statusRoot.panel && statusRoot.panel.activeControlKey === "restart"
-            && !!statusRoot.service && statusRoot.service.mutationRunning
+            && !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
           text: mine ? "Restarting…" : "Restart"
           tooltipText: "Restart the codex-router service"
           enabled: !statusRoot.actionsLocked
@@ -340,7 +342,7 @@ Item {
         Button {
           width: parent.cellWidth
           readonly property bool mine: !!statusRoot.panel && statusRoot.panel.activeControlKey === "update"
-            && !!statusRoot.service && statusRoot.service.mutationRunning
+            && !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
           text: mine ? "Updating…" : "Update"
           tooltipText: "Run the router's maintenance task"
           enabled: !statusRoot.actionsLocked
@@ -355,7 +357,7 @@ Item {
         Button {
           width: parent.cellWidth
           readonly property bool mine: !!statusRoot.panel && statusRoot.panel.activeControlKey === "fix"
-            && !!statusRoot.service && statusRoot.service.mutationRunning
+            && !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
           text: mine ? "Fixing…" : "Fix"
           tooltipText: "Run doctor --fix to repair the installation"
           enabled: !statusRoot.actionsLocked
@@ -373,7 +375,7 @@ Item {
         width: parent.width
         text: "Open web panel"
         tooltipText: "Opens the router's browser panel — sign-ins and API keys live there"
-        enabled: !!statusRoot.service && !statusRoot.service.mutationRunning
+        enabled: !!statusRoot.service && !!statusRoot.controlProcess && !statusRoot.controlProcess.mutationRunning
         bordered: true
         foreground: statusRoot.foreground
         fontFamily: statusRoot.fontFamily
@@ -384,7 +386,7 @@ Item {
       ActionNotice {
         width: parent.width
         notice: statusRoot.panel ? statusRoot.panel.domainNotice("maintenance") : ""
-        running: !!statusRoot.service && statusRoot.service.mutationRunning
+        running: !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
         dim: statusRoot.dim
         urgent: statusRoot.urgent
         fontFamily: statusRoot.fontFamily

@@ -14,8 +14,8 @@ import Quickshell.Io
 // never overlap a toggle clicked in impatience.
 //
 // Refresh policy is deliberately NOT here: a successful job is announced
-// via jobSucceeded(args) and RouterService decides what a fresh read looks
-// like, so "mutate, then re-read" stays in exactly one place.
+// via jobSucceeded(args), and BarWidget composition decides what a fresh read
+// looks like, so "mutate, then re-read" stays in exactly one place.
 Item {
   id: root
 
@@ -25,6 +25,11 @@ Item {
   property bool mutationRunning: false
   property string mutationLabel: ""
   property string mutationError: ""
+
+  // A catalog-model queue uses this to suppress per-command reconciliation
+  // until it drains. BarWidget owns the resulting read policy, keeping this
+  // transport independent of RouterService.
+  property bool deferAutoRefresh: false
 
   // Emitted after onDone(null) for every successful run, with the exact
   // args that ran. Service commands bounce the daemon, so the consumer

@@ -14,6 +14,7 @@ Item {
   // ------------------------------------------------------------- contract
 
   property var service: null
+  property var controlProcess: null
   property var panel: null
 
   // Palette, handed over by the panel.
@@ -30,7 +31,8 @@ Item {
 
   // True while nothing user-facing should accept clicks: the router is
   // unreachable or a mutation is already running.
-  readonly property bool actionsLocked: !service || !service.online || service.mutationRunning
+  readonly property bool actionsLocked: !service || !service.online
+    || !controlProcess || controlProcess.mutationRunning
 
   // One guard for every section that needs live, authenticated data.
   readonly property bool controlsReachable: !!service && service.online
@@ -109,7 +111,7 @@ Item {
         provider: modelData
         enabledState: providersRoot.providerIsEnabled(modelData.id)
         locked: providersRoot.actionsLocked
-        busy: !!providersRoot.service && providersRoot.service.mutationRunning
+        busy: !!providersRoot.controlProcess && providersRoot.controlProcess.mutationRunning
         foreground: providersRoot.foreground
         dim: providersRoot.dim
         fontFamily: providersRoot.fontFamily
@@ -121,7 +123,7 @@ Item {
     ActionNotice {
       width: parent.width
       notice: providersRoot.panel ? providersRoot.panel.domainNotice("providers") : ""
-      running: !!providersRoot.service && providersRoot.service.mutationRunning
+      running: !!providersRoot.controlProcess && providersRoot.controlProcess.mutationRunning
       dim: providersRoot.dim
       urgent: providersRoot.urgent
       fontFamily: providersRoot.fontFamily

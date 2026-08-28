@@ -4,18 +4,13 @@ import Quickshell.Io
 
 // Live router state, polled from the bar widget.
 //
-// Facade over two transports with different failure models:
+// Facade over the reader transport:
 //   - InvokeClient owns loopback HTTP — capability authentication, request
 //     tracking, size limits, the auth retry. Reads go through the same
 //     command bridge the router's browser panel uses.
-//   - ControlProcess owns control CLI spawning — resolved interpreter and
-//     script path, environment, timeouts and the serialized mutation queue.
-//     The only path by which this plugin mutates anything.
 //
-// This file keeps the property and function names every consumer (bar
-// widget, views) already binds to, so the transport split costs no changes
-// on the other side of the seam. It owns interpretation: payload shaping,
-// polling cadence, derived state and the "mutate, then re-read" policy.
+// It owns interpretation: payload shaping, polling cadence and derived state.
+// Control CLI mutations are composed beside this reader in BarWidget.qml.
 Item {
   id: root
 
@@ -27,7 +22,6 @@ Item {
   // Settings overrides; empty string means "use the router's default".
   property string portOverride: ""
   property string stateDirOverride: ""
-  property string sourceRootOverride: ""
   // Slow ChatGPT quota call; off until the user asks for it.
   property bool accountUsageEnabled: false
 
@@ -56,32 +50,7 @@ Item {
     healthTimeoutMs: root.healthTimeoutMs
   }
 
-  ControlProcess {
-    id: controlProcess
-    sourceRootOverride: root.sourceRootOverride
-
-    // Mutate, then re-read — the one place that policy lives. Service
-    // commands bounce the daemon, so an immediate read would race it; one
-    // delayed kick covers start/stop/restart and the regular timers heal
-    // anything still settling.
-    onJobSucceeded: function(args) {
-      if (controlProcess.isServiceCommand(args)) {
-        serviceRefreshTimer.restart()
-      } else if (!root.deferAutoRefresh) {
-        root.pollHealth()
-        root.refreshData()
-      }
-    }
-  }
-
-  // Set by a consumer running a batch of mutations that wants to reconcile
-  // once, when its own queue drains, instead of once per command — the
-  // Models view flips several toggles in a row and a read per toggle would
-  // be several catalog fetches for one intent. The consumer owns clearing it
-  // and asking for the read; nothing else changes about the policy above.
-  property bool deferAutoRefresh: false
-
-  // Facade surface for what the transports own but consumers read here.
+  // Facade surface for what the reader transport owns but consumers read here.
   readonly property alias callerSecret: invokeClient.callerSecret
   readonly property alias hasCallerSecret: invokeClient.hasCallerSecret
 
@@ -96,9 +65,6 @@ Item {
   // so without this the panel would sit empty for a whole data interval
   // after the key it was waiting for arrived.
   onHasCallerSecretChanged: if (root.hasCallerSecret && root.panelOpen) root.refreshData()
-  readonly property alias mutationRunning: controlProcess.mutationRunning
-  readonly property alias mutationLabel: controlProcess.mutationLabel
-  readonly property alias mutationError: controlProcess.mutationError
 
   // Last successfully parsed /health payload; null means the router was
   // never reached (or the answer was unusable) — the offline state.
@@ -239,8 +205,8 @@ Item {
   }
 
   // Refreshes snapshot/provider_setup/provider_usage (+account_usage when
-  // enabled, independently). Called on panel open, on the data interval
-  // while open, and after every mutation (see ControlProcess.onJobSucceeded).
+  // enabled, independently). Called on panel open and on the data interval
+  // while open. Production composition also calls it after mutations.
   function refreshData() {
     if (!root.online || !root.hasCallerSecret) return
     if (root.dataLoading) {
@@ -290,7 +256,7 @@ Item {
     }
 
     for (var i = 0; i < rounds.length; i++)
-      invoke(rounds[i].command, {}, receiverFor(rounds[i]))
+      invokeClient.invoke(rounds[i].command, {}, receiverFor(rounds[i]))
 
     refreshAccountUsage()
   }
@@ -302,31 +268,11 @@ Item {
     if (!root.online || !root.hasCallerSecret) return
 
     root.accountUsageLoading = true
-    invoke("account_usage", {}, function(value, error) {
+    invokeClient.invoke("account_usage", {}, function(value, error) {
       root.accountUsageLoading = false
       root.accountUsageFailed = error !== null
       if (error === null) root.accountUsage = value
     })
-  }
-
-  function invoke(command, args, onDone) {
-    invokeClient.invoke(command, args, onDone)
-  }
-
-  // ------------------------------------------------------------ mutations
-
-  function runControl(label, args, onDone) {
-    controlProcess.runControl(label, args, onDone)
-  }
-
-  // Kept on the facade because consumers key offline behaviour off it; the
-  // answer itself belongs to the CLI vocabulary in ControlProcess.
-  function isServiceCommand(args) {
-    return controlProcess.isServiceCommand(args)
-  }
-
-  function commandBudgetMs(args) {
-    return controlProcess.commandBudgetMs(args)
   }
 
   // ------------------------------------------------------- web panel link
@@ -386,19 +332,6 @@ Item {
     onTriggered: {
       root.refreshData()
       root.refreshAccountUsage()
-    }
-  }
-
-  // Service commands bounce the daemon; PLAN §4 still wants a refresh after
-  // every action. One delayed kick after start/stop/restart — anything that
-  // is still settling is healed by the regular poll timers.
-  Timer {
-    id: serviceRefreshTimer
-    interval: 3000
-    repeat: false
-    onTriggered: {
-      root.pollHealth()
-      root.refreshData()
     }
   }
 }

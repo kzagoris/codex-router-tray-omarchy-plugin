@@ -45,6 +45,10 @@ Panel {
   // The RouterService instance lives inside BarWidget; ids are file-scoped,
   // so this alias-by-property is the only route to it.
   readonly property var service: hostWidget ? hostWidget.routerService : null
+  // ControlProcess is a sibling of RouterService in BarWidget. Mutations use
+  // it directly; the bar composition connects successful jobs to reader
+  // reconciliation.
+  readonly property var controlProcess: hostWidget ? hostWidget.controlProcess : null
 
   // ------------------------------------------------------------- palette
 
@@ -179,12 +183,12 @@ Panel {
   property string activeControlKey: ""
 
   function runAction(domain, key, label, args) {
-    if (!root.service || root.service.mutationRunning) return
+    if (!root.service || !root.controlProcess || root.controlProcess.mutationRunning) return
     // Offline, only service commands make sense — starting it above all.
-    if (!root.service.online && !root.service.isServiceCommand(args)) return
+    if (!root.service.online && !root.controlProcess.isServiceCommand(args)) return
     root.actionDomain = domain
     root.activeControlKey = key
-    root.service.runControl(label, args, function(error) {
+    root.controlProcess.runControl(label, args, function(error) {
       if (error === null) root.actionDomain = ""
       root.activeControlKey = ""
     })
@@ -194,8 +198,9 @@ Panel {
   // empty when the domain is uninvolved.
   function domainNotice(domain) {
     if (!root.service || root.actionDomain !== domain) return ""
-    if (root.service.mutationRunning) return root.service.mutationLabel + "…"
-    return root.service.mutationError
+    if (!root.controlProcess) return ""
+    if (root.controlProcess.mutationRunning) return root.controlProcess.mutationLabel + "…"
+    return root.controlProcess.mutationError
   }
 
   // ---------------------------------------------------------------- misc
@@ -335,13 +340,13 @@ Panel {
               // rest of the install; the read below picks the new key up.
               Button {
                 readonly property bool mine: root.activeControlKey === "recreate-key"
-                  && !!root.service && root.service.mutationRunning
+                  && !!root.controlProcess && root.controlProcess.mutationRunning
 
                 visible: !!root.service && root.service.online && !root.service.hasCallerSecret
                 width: parent.width
                 text: mine ? "Recreating key…" : "Recreate caller key"
                 tooltipText: "Runs doctor --fix to regenerate the router caller key"
-                enabled: !!root.service && !root.service.mutationRunning
+                enabled: !!root.service && !!root.controlProcess && !root.controlProcess.mutationRunning
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -357,6 +362,7 @@ Panel {
             visible: root.selectedView === 0
             width: parent.width
             service: root.service
+            controlProcess: root.controlProcess
             panel: root
             nowMs: root.nowMs
             foreground: root.foreground
@@ -384,6 +390,7 @@ Panel {
             visible: root.selectedView === 2
             width: parent.width
             service: root.service
+            controlProcess: root.controlProcess
             panel: root
             foreground: root.foreground
             urgent: root.urgent
@@ -398,6 +405,7 @@ Panel {
             active: root.selectedView === 3 && root.opened
             width: parent.width
             service: root.service
+            controlProcess: root.controlProcess
             panel: root
             nowMs: root.nowMs
             foreground: root.foreground

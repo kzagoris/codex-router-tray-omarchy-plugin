@@ -24,6 +24,9 @@ Item {
   // ------------------------------------------------------------- contract
 
   property var service: null
+  // The sibling ControlProcess supplied by Panel. It runs mutations while
+  // RouterService remains a reader-only module.
+  property var controlProcess: null
   // The panel, for cross-view navigation (the empty state points at
   // Providers). Views are selected by index there.
   property var panel: null
@@ -41,7 +44,7 @@ Item {
 
   // ------------------------------------------------------- derived state
 
-  readonly property bool controlsReachable: !!service && service.online
+  readonly property bool controlsReachable: !!service && !!controlProcess && service.online
     && service.hasCallerSecret
 
   // Which setting the single list edits: "picker" or "subagents".
@@ -208,11 +211,11 @@ Item {
     modelsRoot._queue = next
     modelsRoot.busy = true
     modelsRoot.runningLabel = intent.label
-    // The service's own "mutate, then re-read" would fire once per command;
+    // Composition's ordinary "mutate, then re-read" would fire once per command;
     // this view reconciles once, when the whole queue has drained.
-    modelsRoot.service.deferAutoRefresh = true
+    modelsRoot.controlProcess.deferAutoRefresh = true
 
-    modelsRoot.service.runControl(intent.label, intent.args, function(error) {
+    modelsRoot.controlProcess.runControl(intent.label, intent.args, function(error) {
       modelsRoot.busy = false
       if (error !== null) {
         // Never leave a setting on screen that did not take — unless a newer
@@ -240,6 +243,7 @@ Item {
   function _settle() {
     if (!modelsRoot.service) {
       modelsRoot._giveUpReconciling()
+      Qt.callLater(modelsRoot._releaseDeferral)
       return
     }
     if (!modelsRoot.controlsReachable) {
@@ -267,7 +271,7 @@ Item {
   }
 
   function _releaseDeferral() {
-    if (modelsRoot.service) modelsRoot.service.deferAutoRefresh = false
+    if (modelsRoot.controlProcess) modelsRoot.controlProcess.deferAutoRefresh = false
   }
 
   // Nothing can be applied: drop the queue, drop every optimistic toggle so
