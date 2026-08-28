@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "kzagoris.codex-router-tray",
   "name": "Codex Router Tray",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "kzagoris",
   "license": "MIT",
   "description": "Codex Router status, usage, providers, and controls in a native bar panel.",

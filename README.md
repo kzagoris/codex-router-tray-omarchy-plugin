@@ -9,7 +9,7 @@ The widget replaces the Tauri desktop companion on Linux. It adds no second
 runtime and no Rust toolchain. The code is QML inside the Omarchy shell
 (Quickshell).
 
-Plugin id: `kzagoris.codex-router-tray` · Version 0.2.0 · License: MIT
+Plugin id: `kzagoris.codex-router-tray` · Version 0.3.0 · License: MIT
 
 <p align="center">
   <img src="preview.png" alt="The four panel views: Status, Usage, Providers, and Models" width="900">
@@ -124,7 +124,7 @@ the router for secrets.
 - Omarchy 4.x (Quattro shell / Quickshell).
 - codex-router, installed and in operation. Start it with
   `systemctl --user start codex-router`. The payload shapes agree with
-  v0.4.0-beta.4.
+  v0.5.0.
 - Node.js on the PATH. Mutations start the control CLI of the router
   (`node …/src/control.mjs`).
 - The caller secret of the router at `~/.codex/codex-router/caller-secret`.
@@ -218,7 +218,49 @@ the plugin.
 
 ## Changelog
 
-### 0.2.0
+Full history in [`CHANGELOG.md`](CHANGELOG.md).
+
+### 0.3.0 — 2026-08-28
+
+- **Router 0.5.0 alignment.** Proof badges follow the new lifecycle
+  (`candidate` → "Probe passed — awaiting certification", `verified` →
+  "Certified on this machine", plus legacy `experimental`/`proven` labels).
+  Local proofs no longer claim registry `v2`, and degraded health names
+  render as "Kimi OAuth forwarder · Grok OAuth forwarder · API forwarder ·
+  Gateway" behind a "Degraded:" prefix — not "providers". Payloads and
+  the `Proof` entry in `CONTEXT.md` are verified against 0.5.0
+  (`scratch/003`, `scratch/006`).
+
+- **Subagent modes are live and honest.** The mode toggle now reads "Every
+  catalog model as a subagent" with the risk that it exposes routes that
+  have never been shown to work. It writes `all`; turning it off writes
+  `selected` when you have a selection, otherwise `proven`. Row state
+  mirrors `applyMultiAgentSettings` (hidden/disabled → registry v2 → mode)
+  so the panel and the spawn agree (`scratch/004`).
+
+- **Repository-certified v1 cannot be a native v2 subagent.** Such rows
+  show a disabled toggle and a badge that names the registry verdict.
+  Picker visibility stays live. When a row is both hidden and v1, the
+  picker interlock takes precedence (`scratch/005`).
+
+- **Status view surfaces more 0.5 facts.** A dim caption shows
+  `chatgptSession` sharing, session, and expiry (`~10d` / `30+ days`);
+  another shows the router default catalog model. Picker rows carry a
+  caption for synthesized native context variants ("Router-managed context
+  variant") and free routes ("Free"). Captions never touch membership,
+  counts, badges, or the interlock (`scratch/007`).
+
+- **Usage view shows what funds the next request.** Generic quota windows
+  (for example opencode Go "Rolling limit") keep the router sanitized
+  label and draw a LIMITS card. `kind: "balance"` metrics render as a
+  FUNDING section — value-only, meter only with a real `usedPercent`,
+  "Unavailable" when `available: false`. `account.plan` and
+  `account.message` render as a bounded ACCOUNT NOTES section. FUNDING and
+  NOTES read `provider_usage` and `provider_setup` and show without the
+  slow `account_usage` call; LIMITS (all quota windows) stays behind
+  `accountUsage: On` (`scratch/008`).
+
+### 0.2.0 — 2026-08-22
 
 - **The Models view.** It shows each model in the catalog that an enabled
   provider gives, in groups by provider. A sub-switcher selects the picker
@@ -238,7 +280,7 @@ the plugin.
 - The control CLI wrapper accepts a slug with a provider, for example
   `opencode-free/big-pickle`.
 
-### 0.1.0
+### 0.1.0 — 2026-08-21
 
 The first public release. It has the bar pill with the live health dot. Its
 panel has the modes, the activity, the usage, and the provider controls. The
