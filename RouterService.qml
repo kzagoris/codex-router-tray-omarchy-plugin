@@ -42,6 +42,7 @@ Item {
   // a read: a hidden View must not be resurrected by a late secret.
   onHasCallerSecretChanged: {
     if (root.hasCallerSecret) root.consumePendingDemand()
+    root.updateActiveViewProjection()
   }
 
   // Last successfully parsed /health payload; null means the router was
@@ -60,6 +61,13 @@ Item {
   property var accountUsage: null
   property bool accountUsageFailed: false
   property bool accountUsageLoading: false
+  property string accountUsageError: ""
+  property double accountUsageFreshAt: 0
+  onAccountUsageChanged: root.updateActiveViewProjection()
+  onAccountUsageLoadingChanged: root.updateActiveViewProjection()
+  onAccountUsageErrorChanged: root.updateActiveViewProjection()
+  onAccountUsageFreshAtChanged: root.updateActiveViewProjection()
+  onAccountUsageEnabledChanged: root.updateActiveViewProjection()
 
   // First error from the shared data commands, message truncated to 500
   // chars like the tray does. Empty = last round had no shared failure;
@@ -90,6 +98,12 @@ Item {
   // It is here now so staged checking demand has the same cancellation rule as
   // the other visibility work.
   property bool checkingProofVisible: false
+  property var _viewRecords: ({})
+  // Active projection commit sequence. This is distinct from a hidden View
+  // record's data revision because switching between equally revised records
+  // is still a coherent public projection commit.
+  property int _activeProjectionCommit: 0
+  property string _lastGlobalBlockingReason: ""
 
   // Intents remain typed while prerequisites or an earlier read block them.
   // Operator reconciliation is keyed by origin so two mutations cannot erase
@@ -127,13 +141,14 @@ Item {
       root._normalizingActiveView = true
       root.activeView = "Status"
       root._normalizingActiveView = false
-      return
     }
+    root.updateActiveViewProjection()
     if (!root.readerPresent) return
     root.cancelInvisibleDemand()
     root.pollHealth()
     root.requestViewEntry(root.activeView)
   }
+  onOnlineChanged: root.updateActiveViewProjection()
   onPanelOpenChanged: if (!root.panelOpen) root.cancelInvisibleDemand()
   onCheckingProofVisibleChanged: if (!root.checkingProofVisible) root.cancelInvisibleDemand()
 
@@ -193,6 +208,28 @@ Item {
   }
   readonly property var routerSummary: routerSummaryProjection
 
+  // The public object is never replaced. Hidden View records stay internal
+  // and are copied here only when that View is selected.
+  QtObject {
+    id: activeViewProjectionObject
+    property string view: "Status"
+    property bool available: false
+    property bool refreshing: false
+    property string blockingReason: "offline"
+    property string readError: ""
+    property double freshAt: 0
+    property int dataRevision: 0
+    property int revision: 0
+    property var snapshot: null
+    property var providerSetup: null
+    property var providerUsage: null
+    property var accountUsage: null
+    property bool accountUsageLoading: false
+    property string accountUsageError: ""
+    property double accountUsageFreshAt: 0
+  }
+  readonly property var activeViewProjection: activeViewProjectionObject
+
   // The codex target block of the snapshot — everything the mode switches
   // and provider toggles reflect. Empty object until the first read lands;
   // one home for the shaping so no view re-derives it.
@@ -229,6 +266,114 @@ Item {
 
   function isSupportedView(view) {
     return ["Status", "Usage", "Providers", "Models"].indexOf(String(view)) !== -1
+  }
+
+  function requiredCommandsForView(view) {
+    if (view === "Usage") return ["provider_setup", "provider_usage"]
+    if (view === "Providers") return ["control_snapshot", "provider_setup"]
+    return ["control_snapshot"]
+  }
+
+  function viewRecord(view) {
+    var key = root.isSupportedView(view) ? view : "Status"
+    var record = root._viewRecords[key]
+    if (record) return record
+    record = { view: key, refreshing: 0, readToken: 0, readError: "", freshAt: 0,
+      revision: 0, snapshot: null, providerSetup: null, providerUsage: null }
+    root._viewRecords[key] = record
+    return record
+  }
+
+  function globalBlockingReason() {
+    if (!root.online) return "offline"
+    if (!root.hasCallerSecret) return "capability-missing"
+    return ""
+  }
+
+  function updateActiveViewProjection() {
+    var record = root.viewRecord(root.activeView)
+    var projection = activeViewProjectionObject
+    var blocking = root.globalBlockingReason()
+    // Read errors remain internal while globally blocked. Once the global
+    // condition recovers, they no longer describe the newly unblocked reader
+    // state, so clear them before any View can project stale failure prose.
+    if (root._lastGlobalBlockingReason !== "" && blocking === "") {
+      var views = Object.keys(root._viewRecords)
+      for (var index = 0; index < views.length; index++)
+        root._viewRecords[views[index]].readError = ""
+      root.accountUsageError = ""
+      root.accountUsageFailed = false
+    }
+    root._lastGlobalBlockingReason = blocking
+    var changed = false
+    if (projection.available !== (record.revision > 0)) { projection.available = record.revision > 0; changed = true }
+    if (projection.refreshing !== (record.refreshing > 0)) { projection.refreshing = record.refreshing > 0; changed = true }
+    if (projection.blockingReason !== blocking) { projection.blockingReason = blocking; changed = true }
+    var visibleReadError = blocking === "" ? record.readError : ""
+    if (projection.readError !== visibleReadError) { projection.readError = visibleReadError; changed = true }
+    if (projection.freshAt !== record.freshAt) { projection.freshAt = record.freshAt; changed = true }
+    if (projection.dataRevision !== record.revision) { projection.dataRevision = record.revision; changed = true }
+    if (projection.snapshot !== record.snapshot) { projection.snapshot = record.snapshot; changed = true }
+    if (projection.providerSetup !== record.providerSetup) { projection.providerSetup = record.providerSetup; changed = true }
+    if (projection.providerUsage !== record.providerUsage) { projection.providerUsage = record.providerUsage; changed = true }
+    var hasAccountUsage = record.view === "Usage" && root.accountUsageEnabled
+    var accountValue = hasAccountUsage ? root.accountUsage : null
+    var accountLoading = hasAccountUsage && root.accountUsageLoading
+    var accountError = hasAccountUsage && blocking === "" ? root.accountUsageError : ""
+    var accountFreshAt = hasAccountUsage ? root.accountUsageFreshAt : 0
+    if (projection.accountUsage !== accountValue) { projection.accountUsage = accountValue; changed = true }
+    if (projection.accountUsageLoading !== accountLoading) { projection.accountUsageLoading = accountLoading; changed = true }
+    if (projection.accountUsageError !== accountError) { projection.accountUsageError = accountError; changed = true }
+    if (projection.accountUsageFreshAt !== accountFreshAt) { projection.accountUsageFreshAt = accountFreshAt; changed = true }
+    // Populate facts before identity changes: an onViewChanged observer never
+    // sees a prior View's payload. QML emits each property independently, so
+    // imperative consumers use revisionChanged (after viewChanged) as the
+    // coherent commit edge; individual factChanged signals stay precise but
+    // are not atomic transactions.
+    if (projection.view !== record.view) { projection.view = record.view; changed = true }
+    if (changed) projection.revision = ++root._activeProjectionCommit
+  }
+
+  function beginViewRead(view) {
+    var record = root.viewRecord(view)
+    record.refreshing++
+    record.readToken++
+    record.readError = ""
+    root.updateActiveViewProjection()
+    return { record: record, token: record.readToken }
+  }
+
+  function finishViewRead(read, required, staged, failedError, allRequiredFresh) {
+    var record = read.record
+    record.refreshing = Math.max(0, record.refreshing - 1)
+    // A newer logical read owns the record's publication. Older shared
+    // receivers still drain their refreshing count, but cannot publish an
+    // error or overwrite the newer complete revision.
+    if (read.token !== record.readToken) {
+      root.updateActiveViewProjection()
+      return
+    }
+    if (failedError !== "") {
+      // Store every local outcome; updateActiveViewProjection masks it while
+      // global Panel chrome is authoritative and clears it on recovery.
+      record.readError = root.plainText(failedError, 500)
+      root.updateActiveViewProjection()
+      return
+    }
+    // A stale successful generation is intentionally silent. It cannot form
+    // a coherent new revision, and it must not overwrite retained facts or
+    // invent an operator-facing error.
+    if (!allRequiredFresh) {
+      root.updateActiveViewProjection()
+      return
+    }
+    if (required.indexOf("control_snapshot") !== -1) record.snapshot = staged.snapshot
+    if (required.indexOf("provider_setup") !== -1) record.providerSetup = staged.providerSetup
+    if (required.indexOf("provider_usage") !== -1) record.providerUsage = staged.providerUsage
+    record.freshAt = root.clock.now()
+    // Revision is assigned last: it marks a fully published fact set.
+    record.revision++
+    root.updateActiveViewProjection()
   }
 
   function demandPriority(kind) {
@@ -385,6 +530,7 @@ Item {
     var requests = root.activeRequests
     if (!root.semanticallyEqual(routerSummaryProjection.activeRequests, requests))
       routerSummaryProjection.activeRequests = requests
+    root.updateActiveViewProjection()
   }
 
   // ------------------------------------------------------------- reading
@@ -457,17 +603,42 @@ Item {
     var gotFresh = false
     var firstSharedError = ""
     var roundOpen = true
+    var required = root.requiredCommandsForView(demand.view)
+    var viewRead = root.beginViewRead(demand.view)
+    var staged = { snapshot: null, providerSetup: null, providerUsage: null }
+    var requiredError = ""
+    var requiredPending = required.length
+    var allRequiredFresh = true
+    var viewReadOpen = true
 
     function receive(round, generation, value, error) {
+      var accepted = false
       if (error === null) {
         gotFresh = true
         var committed = Number(root._committedCommandGeneration[round.command]) || 0
         if (generation >= committed) {
           root[round.prop] = value
           root._committedCommandGeneration[round.command] = generation
+          accepted = true
         }
       } else if (firstSharedError === "") {
         firstSharedError = error
+      }
+      if (required.indexOf(round.command) !== -1) {
+        if (error !== null) {
+          if (requiredError === "") requiredError = error
+        } else if (accepted) {
+          staged[round.prop] = value
+        } else {
+          allRequiredFresh = false
+        }
+        requiredPending--
+        // A View's logical round is complete as soon as its own facts settle;
+        // the broad physical recipe may still be serving unrelated caches.
+        if (requiredPending === 0 && viewReadOpen) {
+          viewReadOpen = false
+          root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh)
+        }
       }
 
       // A retry parked by a mid-round rotation can land after the round
@@ -481,6 +652,10 @@ Item {
       root.dataLoading = root._activeRecipeCount > 0
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = root.clock.now()
+      // Hidden records are intentionally not completed by this broad recipe:
+      // ticket 15 defines the all-View explicit Refresh policy. The helper
+      // above already accepts an arbitrary record/required-fact set so that
+      // policy can fan out without replacing this projection machinery.
       root.consumePendingDemand()
     }
 
@@ -529,10 +704,16 @@ Item {
     if (!root.online || !root.hasCallerSecret) return
 
     root.accountUsageLoading = true
+    root.accountUsageError = ""
     root.io.invoke("account_usage", {}, function(value, error) {
       root.accountUsageLoading = false
       root.accountUsageFailed = error !== null
-      if (error === null) root.accountUsage = value
+      if (error === null) {
+        root.accountUsage = value
+        root.accountUsageFreshAt = root.clock.now()
+      } else {
+        root.accountUsageError = root.plainText(error, 500)
+      }
     })
   }
 
