@@ -24,8 +24,13 @@ BarWidget {
 
   // ------------------------------------------------------------- service
 
+  Clock {
+    id: clock
+  }
+
   RouterService {
     id: router
+    clock: clock
     healthIntervalSec: root.healthIntervalSec
     portOverride: root.routerPortSetting
     dataIntervalSec: root.dataIntervalSec
@@ -49,21 +54,11 @@ BarWidget {
       // Ordinary mutations reconcile immediately unless Models is draining
       // its coalesced queue.
       if (control.isServiceCommand(args)) {
-        serviceRefreshTimer.restart()
+        router.reconcileAfterServiceCommand()
       } else if (!control.deferAutoRefresh) {
         router.pollHealth()
         router.refreshData()
       }
-    }
-  }
-
-  Timer {
-    id: serviceRefreshTimer
-    interval: 3000
-    repeat: false
-    onTriggered: {
-      router.pollHealth()
-      router.refreshData()
     }
   }
 

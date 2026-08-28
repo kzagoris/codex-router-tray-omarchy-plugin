@@ -18,6 +18,12 @@ Item {
   // order: explicit setting wins, then MODEL_ROUTER_PORT, then 4202.
   property int healthIntervalSec: 4
   property int dataIntervalSec: 30
+  readonly property int healthCadenceMs: Math.max(2, root.healthIntervalSec) * 1000
+  readonly property int dataCadenceMs: Math.max(15, root.dataIntervalSec) * 1000
+  readonly property int lifecycleRecoveryDelayMs: 3000
+  // Composed by BarWidget. The adapter owns timer mechanics and wall-clock
+  // access; this reader decides when each cadence is useful.
+  required property var clock
 
   // Settings overrides; empty string means "use the router's default".
   property string portOverride: ""
@@ -61,7 +67,7 @@ Item {
   }
 
   // The read lands asynchronously, after the refresh that asked for it has
-  // already given up for want of a key. dataTimer has no triggeredOnStart,
+  // already given up for want of a key. The data cadence has no start trigger,
   // so without this the panel would sit empty for a whole data interval
   // after the key it was waiting for arrived.
   onHasCallerSecretChanged: if (root.hasCallerSecret && root.panelOpen) root.refreshData()
@@ -242,7 +248,7 @@ Item {
       roundOpen = false
       root.dataLoading = false
       root.dataError = firstSharedError
-      if (gotFresh) root.lastUpdatedAt = Date.now()
+      if (gotFresh) root.lastUpdatedAt = root.clock.now()
       // A mutation landed while this round was flying: its re-read was
       // parked, and this is where it finally runs.
       if (root._refreshPending) {
@@ -273,6 +279,12 @@ Item {
       root.accountUsageFailed = error !== null
       if (error === null) root.accountUsage = value
     })
+  }
+
+  // A Control CLI service command restarts the Router. The reader owns the
+  // recovery policy (including the delay); the clock only owns elapsed time.
+  function reconcileAfterServiceCommand() {
+    cadence.scheduleRecovery()
   }
 
   // ------------------------------------------------------- web panel link
@@ -310,28 +322,29 @@ Item {
     }
   }
 
-  // --------------------------------------------------------------- timers
+  // -------------------------------------------------------- clock adapter
 
-  onHealthIntervalSecChanged: healthTimer.restart()
+  // The health cadence is always useful for the bar widget. Authenticated
+  // data cadence is useful only for an open, reachable Panel.
+  RouterCadence {
+    id: cadence
+    clock: root.clock
+    healthIntervalMs: root.healthCadenceMs
+    dataIntervalMs: root.dataCadenceMs
+    lifecycleDelayMs: root.lifecycleRecoveryDelayMs
+    // Router health remains live for the bar widget even when the Panel is
+    // closed; this is reader policy, not a clock default.
+    healthCadenceActive: true
+    dataCadenceActive: root.panelOpen && root.online && root.hasCallerSecret
 
-  // triggeredOnStart covers the first poll; no Component.onCompleted kick.
-  Timer {
-    id: healthTimer
-    interval: Math.max(2, root.healthIntervalSec) * 1000
-    running: true
-    triggeredOnStart: true
-    repeat: true
-    onTriggered: root.pollHealth()
-  }
-
-  Timer {
-    id: dataTimer
-    interval: Math.max(15, root.dataIntervalSec) * 1000
-    running: root.panelOpen && root.online && root.hasCallerSecret
-    repeat: true
-    onTriggered: {
+    onHealthCadenceDue: root.pollHealth()
+    onDataCadenceDue: {
       root.refreshData()
       root.refreshAccountUsage()
+    }
+    onRecoveryDelayDue: {
+      root.pollHealth()
+      root.refreshData()
     }
   }
 }
