@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell.Io
+import "logic/SecretText.js" as SecretText
 
 // Loopback HTTP transport of the codex-router: the one child that owns
 // network invocation. Capability authentication (the caller-secret file,
@@ -306,7 +307,7 @@ Item {
       var parsed = JSON.parse(String(responseText))
       var message = parsed && parsed.error && parsed.error.message
         ? String(parsed.error.message) : ""
-      if (message !== "") return root._truncate(message, 500)
+      if (message !== "") return root._truncate(root._withoutCallerSecret(message), 500)
     } catch (e) { /* not JSON — use the generic line */ }
     return "Router request failed (" + status + ")."
   }
@@ -314,6 +315,10 @@ Item {
   function _truncate(text, max) {
     text = String(text)
     return text.length > max ? text.slice(0, max - 1) + "…" : text
+  }
+
+  function _withoutCallerSecret(text) {
+    return SecretText.withoutSecret(text, root.callerSecret)
   }
 
   // The one place that assembles capability URLs: every consumer shares the

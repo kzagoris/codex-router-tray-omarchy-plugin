@@ -28,13 +28,19 @@ BarWidget {
     id: clock
   }
 
+  RouterIoAdapter {
+    id: routerIo
+    healthCadenceMs: router.healthCadenceMs
+    portOverride: root.routerPortSetting
+    stateDirOverride: root.stateDirSetting
+  }
+
   RouterService {
     id: router
     clock: clock
+    io: routerIo
     healthIntervalSec: root.healthIntervalSec
-    portOverride: root.routerPortSetting
     dataIntervalSec: root.dataIntervalSec
-    stateDirOverride: root.stateDirSetting
     accountUsageEnabled: root.accountUsageWanted
   }
 

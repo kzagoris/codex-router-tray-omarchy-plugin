@@ -1,13 +1,10 @@
 import QtQuick
-import Quickshell
-import Quickshell.Io
 
 // Live router state, polled from the bar widget.
 //
-// Facade over the reader transport:
-//   - InvokeClient owns loopback HTTP — capability authentication, request
-//     tracking, size limits, the auth retry. Reads go through the same
-//     command bridge the router's browser panel uses.
+// Facade over Router I/O. RouterIoAdapter owns loopback HTTP, capability
+// authentication, request tracking, size limits, auth replay and the secure
+// web-panel handoff. Reads travel through its raw callback contract.
 //
 // It owns interpretation: payload shaping, polling cadence and derived state.
 // Control CLI mutations are composed beside this reader in BarWidget.qml.
@@ -24,46 +21,20 @@ Item {
   // Composed by BarWidget. The adapter owns timer mechanics and wall-clock
   // access; this reader decides when each cadence is useful.
   required property var clock
-
-  // Settings overrides; empty string means "use the router's default".
-  property string portOverride: ""
-  property string stateDirOverride: ""
+  // Production composition supplies RouterIoAdapter; QML tests supply a
+  // scripted adapter with the same raw callback contract.
+  required property var io
   // Slow ChatGPT quota call; off until the user asks for it.
   property bool accountUsageEnabled: false
 
-  readonly property string _envPort: Quickshell.env("MODEL_ROUTER_PORT") || ""
-  property string port: {
-    if (root.portOverride !== "") return root.portOverride
-    return /^\d+$/.test(root._envPort) ? root._envPort : "4202"
-  }
-
-  // The state dir carries the caller capability. No env fallback exists on
-  // the router side for this one — only the documented default path.
-  readonly property string stateDir: {
-    if (root.stateDirOverride !== "") return root.stateDirOverride
-    var home = Quickshell.env("HOME") || ""
-    return home !== "" ? home + "/.codex/codex-router" : ""
-  }
-
-  // Budget for one /health answer, derived from the poll cadence so a
-  // merely-slow response is never dropped as stale (see InvokeClient).
-  readonly property int healthTimeoutMs: Math.max(2000, Math.max(2, root.healthIntervalSec) * 1000 - 250)
-
-  InvokeClient {
-    id: invokeClient
-    port: root.port
-    stateDir: root.stateDir
-    healthTimeoutMs: root.healthTimeoutMs
-  }
-
-  // Facade surface for what the reader transport owns but consumers read here.
-  readonly property alias callerSecret: invokeClient.callerSecret
-  readonly property alias hasCallerSecret: invokeClient.hasCallerSecret
+  // The capability secret never crosses this boundary. Consumers only learn
+  // whether authenticated effects are available.
+  readonly property bool hasCallerSecret: !!root.io && root.io.hasCallerSecret
 
   // Re-read a caller key that was missing at startup. Reader-driven: the
   // panel asks on open and on Refresh, nothing polls (see InvokeClient).
   function recheckCallerSecret() {
-    invokeClient.recheckCallerSecret()
+    root.io.recheckCallerSecret()
   }
 
   // The read lands asynchronously, after the refresh that asked for it has
@@ -187,7 +158,7 @@ Item {
   // ------------------------------------------------------------- reading
 
   function pollHealth() {
-    invokeClient.fetchHealth(applyHealth)
+    root.io.fetchHealth(applyHealth)
   }
 
   function applyHealth(status, text) {
@@ -262,7 +233,7 @@ Item {
     }
 
     for (var i = 0; i < rounds.length; i++)
-      invokeClient.invoke(rounds[i].command, {}, receiverFor(rounds[i]))
+      root.io.invoke(rounds[i].command, {}, receiverFor(rounds[i]))
 
     refreshAccountUsage()
   }
@@ -274,7 +245,7 @@ Item {
     if (!root.online || !root.hasCallerSecret) return
 
     root.accountUsageLoading = true
-    invokeClient.invoke("account_usage", {}, function(value, error) {
+    root.io.invoke("account_usage", {}, function(value, error) {
       root.accountUsageLoading = false
       root.accountUsageFailed = error !== null
       if (error === null) root.accountUsage = value
@@ -289,37 +260,10 @@ Item {
 
   // ------------------------------------------------------- web panel link
 
-  // The plugin's bin/panel: hand the capability URL to xdg-open, gated the
-  // same way bin/panel gates itself (no key, no router — no browser). The
-  // URL travels through stdin to a fixed command instead of argv: quickshell
-  // logs the whole command when a binary fails to start, and that log line
-  // must never contain the secret.
+  // The capability URL and browser handoff stay in the I/O adapter. The
+  // reader declares only the semantic request and its online fact.
   function openWebPanel() {
-    if (!root.hasCallerSecret) {
-      console.warn("codex-router-tray", "No caller key — cannot open the web panel.")
-      return false
-    }
-    if (!root.online) {
-      console.warn("codex-router-tray", "Router offline — not opening the web panel.")
-      return false
-    }
-    if (webPanelOpener.running) return true
-    webPanelOpener.running = true
-    // Spawn is synchronous, so the pipe exists by this line.
-    webPanelOpener.write(invokeClient.callerUrl("panel/") + "\n")
-    return true
-  }
-
-  Process {
-    id: webPanelOpener
-    running: false
-    command: ["sh", "-c", "read -r url && exec xdg-open \"$url\""]
-
-    stderr: StdioCollector {
-      waitForEnd: true
-      // Generic on purpose: opener diagnostics name no URLs.
-      onStreamFinished: if (text.trim() !== "") console.warn("codex-router-tray", "xdg-open failed")
-    }
+    return root.io.openWebPanel(root.online)
   }
 
   // -------------------------------------------------------- clock adapter
