@@ -75,13 +75,17 @@ Panel {
   // restarts (this object is rebuilt then).
   property int selectedView: 0
 
-  onSelectedViewChanged: if (panelFlick) panelFlick.contentY = 0
+  onSelectedViewChanged: {
+    if (panelFlick) panelFlick.contentY = 0
+    if (!root.opened || !root.service) return
+    root.service.activeView = root.viewTabs[root.selectedView]
+    root.service.requestViewEntry(root.service.activeView)
+  }
 
   // ---- Open/close. Overridden (not inherited) so a hotkey summon suppresses
   //      the bar's center hover reveal: summoning moves no pointer, and the
   //      indicators would stay lit behind the panel otherwise (see clock).
   function open() {
-    refreshNow()
     root.controller.show()
     // Set after showing, not before: showing hands the popout coordinator
     // over, which closes whichever panel was open, and that close clears the
@@ -124,7 +128,7 @@ Panel {
     // reader is actually waiting on the answer.
     root.service.recheckCallerSecret()
     root.service.pollHealth()
-    root.service.refreshData()
+    root.service.requestRefresh()
   }
 
   function refresh() {
@@ -138,7 +142,10 @@ Panel {
     if (opened) {
       nowMs = Date.now()
       if (panelFlick) panelFlick.contentY = 0
-      refreshNow()
+      root.service.activeView = root.viewTabs[root.selectedView]
+      root.service.recheckCallerSecret()
+      root.service.pollHealth()
+      root.service.requestViewEntry(root.service.activeView)
     }
   }
 

@@ -60,10 +60,10 @@ BarWidget {
       // Ordinary mutations reconcile immediately unless Models is draining
       // its coalesced queue.
       if (control.isServiceCommand(args)) {
-        router.reconcileAfterServiceCommand()
+        router.reconcileAfterServiceCommand(router.activeView)
       } else if (!control.deferAutoRefresh) {
         router.pollHealth()
-        router.refreshData()
+        router.requestReconciliation(router.activeView)
       }
     }
   }

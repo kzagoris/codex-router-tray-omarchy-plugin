@@ -37,11 +37,12 @@ Item {
     root.io.recheckCallerSecret()
   }
 
-  // The read lands asynchronously, after the refresh that asked for it has
-  // already given up for want of a key. The data cadence has no start trigger,
-  // so without this the panel would sit empty for a whole data interval
-  // after the key it was waiting for arrived.
-  onHasCallerSecretChanged: if (root.hasCallerSecret && (root.panelOpen || root.readerPresent)) root.refreshData()
+  // A capability can arrive after a View has declared its reader demand. The
+  // demand itself, rather than this notification, decides whether that unlocks
+  // a read: a hidden View must not be resurrected by a late secret.
+  onHasCallerSecretChanged: {
+    if (root.hasCallerSecret) root.consumePendingDemand()
+  }
 
   // Last successfully parsed /health payload; null means the router was
   // never reached (or the answer was unusable) — the offline state.
@@ -65,10 +66,6 @@ Item {
   // individual payloads still update around it.
   property string dataError: ""
   property bool dataLoading: false
-  // Set when a refresh was asked for mid-round (a mutation finishing while
-  // the interval read is still in flight) and consumed when the round
-  // closes, so "mutate, then re-read" can never be silently dropped.
-  property bool _refreshPending: false
   // Wall-clock of the last round that produced any fresh payload.
   property double lastUpdatedAt: 0
   // Monotonic counter of read rounds, incremented as each one *begins*. A
@@ -89,12 +86,28 @@ Item {
   property bool readerPresent: false
   property string activeView: "Status"
   property bool _normalizingActiveView: false
+  // Later Models migration declares this while a visible Proof is checking.
+  // It is here now so staged checking demand has the same cancellation rule as
+  // the other visibility work.
+  property bool checkingProofVisible: false
+
+  // Intents remain typed while prerequisites or an earlier read block them.
+  // Operator reconciliation is keyed by origin so two mutations cannot erase
+  // each other; visibility work is keyed by kind and its current View.
+  property var _pendingDemands: []
+  property string _lifecycleRecoveryOrigin: "Status"
+  // Stable diagnostic for lifecycle callers: its value is captured when the
+  // service command settles, never sampled when the delayed recovery fires.
+  readonly property string lifecycleRecoveryOrigin: root._lifecycleRecoveryOrigin
 
   onReaderPresentChanged: {
-    if (!root.readerPresent) return
+    if (!root.readerPresent) {
+      root.cancelInvisibleDemand()
+      return
+    }
     root.recheckCallerSecret()
     root.pollHealth()
-    root.refreshData()
+    root.requestViewEntry(root.activeView)
   }
   onActiveViewChanged: {
     if (root._normalizingActiveView) return
@@ -106,9 +119,12 @@ Item {
       return
     }
     if (!root.readerPresent) return
+    root.cancelInvisibleDemand()
     root.pollHealth()
-    root.refreshData()
+    root.requestViewEntry(root.activeView)
   }
+  onPanelOpenChanged: if (!root.panelOpen) root.cancelInvisibleDemand()
+  onCheckingProofVisibleChanged: if (!root.checkingProofVisible) root.cancelInvisibleDemand()
 
   readonly property bool online: !!health && health.ok === true
   readonly property var activity: health && health.activity ? health.activity : {}
@@ -204,6 +220,107 @@ Item {
     return ["Status", "Usage", "Providers", "Models"].indexOf(String(view)) !== -1
   }
 
+  function demandPriority(kind) {
+    if (kind === "refresh") return 3
+    if (kind === "checking-proof") return 2
+    if (kind === "reconciliation") return 2
+    return 1
+  }
+
+  function isVisibilityDemand(demand) {
+    return demand && (demand.kind === "view-entry" || demand.kind === "cadence"
+      || demand.kind === "checking-proof")
+  }
+
+  function demandIsStillVisible(demand) {
+    if (!root.isVisibilityDemand(demand)) return true
+    if (!(root.readerPresent || root.panelOpen)) return false
+    if (demand.view !== root.activeView) return false
+    return demand.kind !== "checking-proof" || root.checkingProofVisible
+  }
+
+  function cancelInvisibleDemand() {
+    root._pendingDemands = root._pendingDemands.filter(function(demand) {
+      return !root.isVisibilityDemand(demand) || root.demandIsStillVisible(demand)
+    })
+  }
+
+  function demandKey(demand) {
+    if (demand.kind === "reconciliation") return "reconciliation:" + demand.view
+    if (demand.kind === "view-entry") return "view-entry"
+    if (demand.kind === "cadence") return "cadence"
+    if (demand.kind === "checking-proof") return "checking-proof:" + demand.view
+    return demand.kind
+  }
+
+  function stageDemand(kind, view) {
+    var demand = {
+      kind: kind,
+      view: view || root.activeView,
+      trailing: root.dataLoading
+    }
+    if (root.isVisibilityDemand(demand) && !root.demandIsStillVisible(demand)) return
+    var key = root.demandKey(demand)
+    var next = root._pendingDemands.filter(function(existing) {
+      return root.demandKey(existing) !== key
+    })
+    next.push(demand)
+    root._pendingDemands = next
+    root.consumePendingDemand()
+  }
+
+  function consumePendingDemand() {
+    root.cancelInvisibleDemand()
+    if (root.dataLoading || !root.online || !root.hasCallerSecret) return false
+    var selected = -1
+    for (var index = 0; index < root._pendingDemands.length; index++) {
+      var candidate = root._pendingDemands[index]
+      if (selected < 0 || root.demandPriority(candidate.kind)
+          > root.demandPriority(root._pendingDemands[selected].kind)) selected = index
+    }
+    if (selected < 0) return false
+    var demand = root._pendingDemands[selected]
+    var next = root._pendingDemands.slice()
+    next.splice(selected, 1)
+    // Every queued demand that arrived while the current shared recipe was
+    // active is answered by one trailing shared recipe. Their typed records
+    // remain cancellable until this point; after dispatch, that one read is
+    // the coherent post-round answer for all of them.
+    if (demand.trailing) {
+      next = next.filter(function(existing) { return !existing.trailing })
+    }
+    // Refresh is the operator's complete read intent. Once it actually starts,
+    // queued visibility reads are satisfied by that same round; retained
+    // reconciliation intents remain independent and therefore survive.
+    if (demand.kind === "refresh") {
+      next = next.filter(function(existing) { return !root.isVisibilityDemand(existing) })
+    }
+    root._pendingDemands = next
+    root.dispatchDemand(demand)
+    return true
+  }
+
+  function requestViewEntry(view) {
+    if (!(root.readerPresent || root.panelOpen) || !root.isSupportedView(view)) return
+    root.stageDemand("view-entry", view)
+  }
+
+  // Public semantic intents. The broad effect recipe remains intentionally
+  // legacy-shaped until ticket 15 defines Refresh completeness and ticket 16
+  // maps real mutation outcomes to reconciliation recipes.
+  function requestRefresh() { root.stageDemand("refresh", root.activeView) }
+  function requestReconciliation(originatingView) {
+    root.stageDemand("reconciliation", originatingView)
+  }
+  function requestCheckingProof(view) {
+    root.stageDemand("checking-proof", view)
+  }
+  function requestCadence() { root.stageDemand("cadence", root.activeView) }
+
+  function dispatchDemand(demand) {
+    root.dispatchDataRecipe(demand)
+  }
+
   function semanticallyEqual(left, right) {
     if (left === right) return true
     if (left === null || right === null || left === undefined || right === undefined)
@@ -260,6 +377,7 @@ Item {
       // "offline" always means "not trusting stale data".
       root.health = null
       root.updateRouterSummary()
+      root.consumePendingDemand()
       return
     }
     try {
@@ -270,6 +388,7 @@ Item {
         if (live !== "") root.lastProviderName = live
       }
       root.updateRouterSummary()
+      root.consumePendingDemand()
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
       root.health = null
@@ -277,15 +396,16 @@ Item {
     }
   }
 
-  // Refreshes snapshot/provider_setup/provider_usage (+account_usage when
-  // enabled, independently). Called on panel open and on the data interval
-  // while open. Production composition also calls it after mutations.
+  // Expand-step compatibility for legacy callers and tests. Production Panel,
+  // cadence and mutation paths declare narrower semantic intents above.
+  // This alias means explicit operator Refresh; ticket 15 defines its complete
+  // all-facts recipe.
   function refreshData() {
+    root.requestRefresh()
+  }
+
+  function dispatchDataRecipe(demand) {
     if (!root.online || !root.hasCallerSecret) return
-    if (root.dataLoading) {
-      root._refreshPending = true
-      return
-    }
 
     root.dataLoading = true
     root.dataRound++
@@ -316,12 +436,7 @@ Item {
       root.dataLoading = false
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = root.clock.now()
-      // A mutation landed while this round was flying: its re-read was
-      // parked, and this is where it finally runs.
-      if (root._refreshPending) {
-        root._refreshPending = false
-        refreshData()
-      }
+      root.consumePendingDemand()
     }
 
     function receiverFor(round) {
@@ -350,7 +465,9 @@ Item {
 
   // A Control CLI service command restarts the Router. The reader owns the
   // recovery policy (including the delay); the clock only owns elapsed time.
-  function reconcileAfterServiceCommand() {
+  function reconcileAfterServiceCommand(originatingView) {
+    root._lifecycleRecoveryOrigin = root.isSupportedView(originatingView)
+      ? originatingView : root.activeView
     cadence.scheduleRecovery()
   }
 
@@ -380,12 +497,11 @@ Item {
 
     onHealthCadenceDue: root.pollHealth()
     onDataCadenceDue: {
-      root.refreshData()
-      root.refreshAccountUsage()
+      root.requestCadence()
     }
     onRecoveryDelayDue: {
       root.pollHealth()
-      root.refreshData()
+      root.requestReconciliation(root._lifecycleRecoveryOrigin)
     }
   }
 }

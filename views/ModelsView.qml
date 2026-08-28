@@ -86,6 +86,7 @@ Item {
   // below. Entering while the router is unreachable must not strand the view
   // on an empty list, so reachability arriving later is a second trigger.
   onActiveChanged: {
+    modelsRoot._syncCheckingProofVisibility()
     modelsRoot._loadIfNeeded()
     // Leaving with a change that nothing will ever reconcile — a failed
     // read, a router that went away — must not park an optimistic toggle
@@ -103,10 +104,17 @@ Item {
     // away, so stop showing it as if something were.
     if (!modelsRoot.controlsReachable) modelsRoot._giveUpReconciling()
   }
+  onViewModelChanged: modelsRoot._syncCheckingProofVisibility()
+
+  function _syncCheckingProofVisibility() {
+    if (modelsRoot.service)
+      modelsRoot.service.checkingProofVisible = modelsRoot.active
+        && modelsRoot.viewModel.anyChecking === true
+  }
 
   function _loadIfNeeded() {
     if (!modelsRoot.active || !modelsRoot.controlsReachable) return
-    if (!modelsRoot.service.snapshot) modelsRoot.service.refreshData()
+    if (!modelsRoot.service.snapshot) modelsRoot.service.requestViewEntry("Models")
   }
 
   // The one state the router changes on its own: a capability probe running
@@ -118,7 +126,7 @@ Item {
     repeat: true
     running: modelsRoot.active && modelsRoot.controlsReachable
       && modelsRoot.viewModel.anyChecking && !modelsRoot.busy
-    onTriggered: modelsRoot.service.refreshData()
+    onTriggered: modelsRoot.service.requestCheckingProof("Models")
   }
 
   // ------------------------------------------------------------ mutations
@@ -247,15 +255,15 @@ Item {
       return
     }
     if (!modelsRoot.controlsReachable) {
-      // refreshData() would no-op, so no read is coming: show what is known
-      // rather than a setting nothing can confirm.
+      // No reconciliation can dispatch, so show what is known rather than a
+      // setting nothing can confirm.
       modelsRoot._giveUpReconciling()
       Qt.callLater(modelsRoot._releaseDeferral)
       return
     }
     modelsRoot._settledRound = modelsRoot.service.dataRound
     modelsRoot._reconciling = true
-    modelsRoot.service.refreshData()
+    modelsRoot.service.requestReconciliation("Models")
     Qt.callLater(modelsRoot._releaseDeferral)
   }
 
