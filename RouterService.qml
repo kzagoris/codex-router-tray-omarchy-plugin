@@ -41,7 +41,7 @@ Item {
   // already given up for want of a key. The data cadence has no start trigger,
   // so without this the panel would sit empty for a whole data interval
   // after the key it was waiting for arrived.
-  onHasCallerSecretChanged: if (root.hasCallerSecret && root.panelOpen) root.refreshData()
+  onHasCallerSecretChanged: if (root.hasCallerSecret && (root.panelOpen || root.readerPresent)) root.refreshData()
 
   // Last successfully parsed /health payload; null means the router was
   // never reached (or the answer was unusable) — the offline state.
@@ -82,6 +82,34 @@ Item {
   // only polled for a reader, never behind a closed panel.
   property bool panelOpen: false
 
+  // The expanding caller contract. A caller declares whether it has a reader
+  // and which View is visible; later workflow tickets turn that declaration
+  // into View-specific demand. `panelOpen` remains for the unchanged callers
+  // during this compatibility step.
+  property bool readerPresent: false
+  property string activeView: "Status"
+  property bool _normalizingActiveView: false
+
+  onReaderPresentChanged: {
+    if (!root.readerPresent) return
+    root.recheckCallerSecret()
+    root.pollHealth()
+    root.refreshData()
+  }
+  onActiveViewChanged: {
+    if (root._normalizingActiveView) return
+    if (!root.isSupportedView(root.activeView)) {
+      console.warn("codex-router-tray", "Unsupported Router reader View:", root.activeView)
+      root._normalizingActiveView = true
+      root.activeView = "Status"
+      root._normalizingActiveView = false
+      return
+    }
+    if (!root.readerPresent) return
+    root.pollHealth()
+    root.refreshData()
+  }
+
   readonly property bool online: !!health && health.ok === true
   readonly property var activity: health && health.activity ? health.activity : {}
 
@@ -121,6 +149,23 @@ Item {
 
   readonly property string version: root.health ? root.plainText(health.version, 32) : ""
 
+  // Stable, bar-facing Router projection. Keep this object in place and bind
+  // individual facts, so a health event notifies only the facts it changes.
+  QtObject {
+    id: routerSummaryProjection
+
+    property bool online: false
+    readonly property bool capabilityAvailable: root.hasCallerSecret
+    property string routerState: "offline"
+    property bool degraded: false
+    property var degradedNames: []
+    property var activeRequests: []
+    property int activeCount: 0
+    property string providerName: ""
+    property string version: ""
+  }
+  readonly property var routerSummary: routerSummaryProjection
+
   // The codex target block of the snapshot — everything the mode switches
   // and provider toggles reflect. Empty object until the first read lands;
   // one home for the shaping so no view re-derives it.
@@ -155,6 +200,54 @@ Item {
     return text.length > limit ? text.slice(0, limit - 1) + "…" : text
   }
 
+  function isSupportedView(view) {
+    return ["Status", "Usage", "Providers", "Models"].indexOf(String(view)) !== -1
+  }
+
+  function semanticallyEqual(left, right) {
+    if (left === right) return true
+    if (left === null || right === null || left === undefined || right === undefined)
+      return false
+    if (typeof left !== typeof right || typeof left !== "object") return false
+    if (Array.isArray(left) !== Array.isArray(right)) return false
+    if (Array.isArray(left)) {
+      if (left.length !== right.length) return false
+      for (var i = 0; i < left.length; i++)
+        if (!root.semanticallyEqual(left[i], right[i])) return false
+      return true
+    }
+    var leftKeys = Object.keys(left).sort()
+    var rightKeys = Object.keys(right).sort()
+    if (leftKeys.length !== rightKeys.length) return false
+    for (var keyIndex = 0; keyIndex < leftKeys.length; keyIndex++) {
+      var key = leftKeys[keyIndex]
+      if (key !== rightKeys[keyIndex] || !root.semanticallyEqual(left[key], right[key]))
+        return false
+    }
+    return true
+  }
+
+  function updateRouterSummary() {
+    if (routerSummaryProjection.online !== root.online)
+      routerSummaryProjection.online = root.online
+    if (routerSummaryProjection.routerState !== root.routerState)
+      routerSummaryProjection.routerState = root.routerState
+    if (routerSummaryProjection.degraded !== root.degraded)
+      routerSummaryProjection.degraded = root.degraded
+    if (routerSummaryProjection.activeCount !== root.activeCount)
+      routerSummaryProjection.activeCount = root.activeCount
+    if (routerSummaryProjection.providerName !== root.providerName)
+      routerSummaryProjection.providerName = root.providerName
+    if (routerSummaryProjection.version !== root.version)
+      routerSummaryProjection.version = root.version
+    var names = root.degradedNames
+    if (!root.semanticallyEqual(routerSummaryProjection.degradedNames, names))
+      routerSummaryProjection.degradedNames = names
+    var requests = root.activeRequests
+    if (!root.semanticallyEqual(routerSummaryProjection.activeRequests, requests))
+      routerSummaryProjection.activeRequests = requests
+  }
+
   // ------------------------------------------------------------- reading
 
   function pollHealth() {
@@ -166,6 +259,7 @@ Item {
       // Unreachable or unhappy: drop the last known payload wholesale so
       // "offline" always means "not trusting stale data".
       root.health = null
+      root.updateRouterSummary()
       return
     }
     try {
@@ -175,9 +269,11 @@ Item {
         var live = root.plainText(root.activity.provider, 48)
         if (live !== "") root.lastProviderName = live
       }
+      root.updateRouterSummary()
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
       root.health = null
+      root.updateRouterSummary()
     }
   }
 
@@ -279,7 +375,8 @@ Item {
     // Router health remains live for the bar widget even when the Panel is
     // closed; this is reader policy, not a clock default.
     healthCadenceActive: true
-    dataCadenceActive: root.panelOpen && root.online && root.hasCallerSecret
+    dataCadenceActive: (root.panelOpen || root.readerPresent)
+      && root.online && root.hasCallerSecret
 
     onHealthCadenceDue: root.pollHealth()
     onDataCadenceDue: {
