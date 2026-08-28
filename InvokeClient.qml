@@ -79,6 +79,7 @@ Item {
   // ------------------------------------------------------------- health
 
   property var _inFlight: null
+  property var _healthEntry: null
 
   // Response ceilings. /health is a fixed-shape status blob measured in
   // hundreds of bytes; the authenticated commands carry usage tables and
@@ -100,7 +101,10 @@ Item {
 
     var xhr = new XMLHttpRequest()
     var entry = _track(xhr, Math.max(2000, root.healthTimeoutMs), root._healthMaxChars)
+    entry.onDone = onDone
+    entry.settled = false
     _inFlight = xhr
+    _healthEntry = entry
     xhr.onreadystatechange = function() {
       if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED
           || xhr.readyState === XMLHttpRequest.LOADING) {
@@ -110,16 +114,23 @@ Item {
         return
       }
       if (xhr.readyState !== XMLHttpRequest.DONE) return
-      if (_inFlight === xhr) _inFlight = null
-      _untrack(entry)
-      if (entry.oversize) {
-        if (onDone) onDone(0, "")
-        return
-      }
-      if (onDone) onDone(xhr.status, xhr.responseText)
+      root._settleHealth(xhr, entry, entry.oversize ? 0 : xhr.status,
+        entry.oversize ? "" : xhr.responseText)
     }
     xhr.open("GET", "http://127.0.0.1:" + root.port + "/health")
     xhr.send()
+  }
+
+  // The watchdog must complete the callback itself: some QML XHR backends do
+  // not deliver DONE after abort(), and otherwise RouterService's single-flight
+  // guard would remain latched forever.
+  function _settleHealth(xhr, entry, status, text) {
+    if (entry.settled) return
+    entry.settled = true
+    if (_inFlight === xhr) _inFlight = null
+    if (_healthEntry === entry) _healthEntry = null
+    _untrack(entry)
+    if (entry.onDone) entry.onDone(status, text)
   }
 
   // ---------------------------------------------------- request watchdog
@@ -170,6 +181,11 @@ Item {
     entry.oversize = true
     _untrack(entry)
     try { request.abort() } catch (e) { /* already gone */ }
+    if (request === _inFlight) root._settleHealth(request, entry, 0, "")
+    else if (!entry.settled) {
+      entry.settled = true
+      if (entry.onDone) entry.onDone(null, "Router sent an oversized response.")
+    }
     console.warn("codex-router-tray", "Oversized router response aborted at", size, "chars")
     return true
   }
@@ -199,7 +215,17 @@ Item {
       entry.timedOut = true
       _untrack(entry)
       try { request.abort() } catch (e) { /* already gone */ }
+      if (request === _inFlight)
+        _settleHealth(request, entry, 0, "")
+      else if (!entry.settled)
+        _settleInvokeTimeout(entry)
     }
+  }
+
+  function _settleInvokeTimeout(entry) {
+    if (entry.settled) return
+    entry.settled = true
+    if (entry.onDone) entry.onDone(null, "Router did not answer in time.")
   }
 
   // ------------------------------------------------- authenticated invoke
@@ -225,6 +251,8 @@ Item {
     var entry = _track(request,
       command === "account_usage" ? 30000 : 15000,
       root._invokeMaxChars)
+    entry.onDone = onDone
+    entry.settled = false
     var settled = false
 
     request.onreadystatechange = function() {
@@ -234,8 +262,9 @@ Item {
         return
       }
       if (request.readyState !== XMLHttpRequest.DONE) return
-      if (settled) return
+      if (settled || entry.settled) return
       settled = true
+      entry.settled = true
       _untrack(entry)
 
       if (entry.oversize) {

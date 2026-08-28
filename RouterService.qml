@@ -95,6 +95,17 @@ Item {
   // Operator reconciliation is keyed by origin so two mutations cannot erase
   // each other; visibility work is keyed by kind and its current View.
   property var _pendingDemands: []
+  // Commands are independently versioned. A result is useful only if it is
+  // at least as new as the fact already committed; callbacks may arrive in
+  // any order from the I/O adapter.
+  property var _nextCommandGeneration: ({})
+  property var _committedCommandGeneration: ({})
+  property var _inFlightCommands: ({})
+  property int _activeRecipeCount: 0
+  property bool _healthInFlight: false
+  property int _nextHealthGeneration: 0
+  property int _committedHealthGeneration: 0
+  property bool _refreshHealthPending: false
   property string _lifecycleRecoveryOrigin: "Status"
   // Stable diagnostic for lifecycle callers: its value is captured when the
   // service command settles, never sampled when the delayed recovery fires.
@@ -257,7 +268,7 @@ Item {
     var demand = {
       kind: kind,
       view: view || root.activeView,
-      trailing: root.dataLoading
+      trailing: root.dataLoading && (kind === "refresh" || kind === "reconciliation")
     }
     if (root.isVisibilityDemand(demand) && !root.demandIsStillVisible(demand)) return
     var key = root.demandKey(demand)
@@ -271,7 +282,7 @@ Item {
 
   function consumePendingDemand() {
     root.cancelInvisibleDemand()
-    if (root.dataLoading || !root.online || !root.hasCallerSecret) return false
+    if (!root.online || !root.hasCallerSecret) return false
     var selected = -1
     for (var index = 0; index < root._pendingDemands.length; index++) {
       var candidate = root._pendingDemands[index]
@@ -280,6 +291,10 @@ Item {
     }
     if (selected < 0) return false
     var demand = root._pendingDemands[selected]
+    // Ordinary view demand is allowed to join the active physical command
+    // batch. Forced Router-truth work retains its causal floor as one trailing
+    // batch instead, so it cannot be answered by pre-intent payloads.
+    if (root.dataLoading && demand.trailing) return false
     var next = root._pendingDemands.slice()
     next.splice(selected, 1)
     // Every queued demand that arrived while the current shared recipe was
@@ -296,7 +311,7 @@ Item {
       next = next.filter(function(existing) { return !root.isVisibilityDemand(existing) })
     }
     root._pendingDemands = next
-    root.dispatchDemand(demand)
+    root.dispatchDemand(demand, root.dataLoading)
     return true
   }
 
@@ -308,7 +323,14 @@ Item {
   // Public semantic intents. The broad effect recipe remains intentionally
   // legacy-shaped until ticket 15 defines Refresh completeness and ticket 16
   // maps real mutation outcomes to reconciliation recipes.
-  function requestRefresh() { root.stageDemand("refresh", root.activeView) }
+  function requestRefresh() {
+    // A known-good health fact is enough to start the authenticated recipe,
+    // but Refresh still samples health. Starting both effects here avoids
+    // putting useful authenticated work behind an answer we already have.
+    if (root._healthInFlight) root._refreshHealthPending = true
+    else root.pollHealth()
+    root.stageDemand("refresh", root.activeView)
+  }
   function requestReconciliation(originatingView) {
     root.stageDemand("reconciliation", originatingView)
   }
@@ -317,8 +339,8 @@ Item {
   }
   function requestCadence() { root.stageDemand("cadence", root.activeView) }
 
-  function dispatchDemand(demand) {
-    root.dispatchDataRecipe(demand)
+  function dispatchDemand(demand, joinsActiveRecipe) {
+    root.dispatchDataRecipe(demand, joinsActiveRecipe === true)
   }
 
   function semanticallyEqual(left, right) {
@@ -368,14 +390,29 @@ Item {
   // ------------------------------------------------------------- reading
 
   function pollHealth() {
-    root.io.fetchHealth(applyHealth)
+    // Health is one command too: shared callers observe the same live probe
+    // instead of building an overlapping HTTP queue.
+    if (root._healthInFlight) return false
+    root._healthInFlight = true
+    var generation = ++root._nextHealthGeneration
+    root.io.fetchHealth(function(status, text) {
+      root._healthInFlight = false
+      root.applyHealth(status, text, generation)
+      if (root._refreshHealthPending) {
+        root._refreshHealthPending = false
+        root.pollHealth()
+      }
+    })
+    return true
   }
 
-  function applyHealth(status, text) {
+  function applyHealth(status, text, generation) {
+    if (generation !== undefined && generation < root._committedHealthGeneration) return
     if (status !== 200) {
       // Unreachable or unhappy: drop the last known payload wholesale so
       // "offline" always means "not trusting stale data".
       root.health = null
+      root._committedHealthGeneration = generation || root._committedHealthGeneration
       root.updateRouterSummary()
       root.consumePendingDemand()
       return
@@ -383,6 +420,7 @@ Item {
     try {
       var parsed = JSON.parse(String(text))
       root.health = parsed && typeof parsed === "object" ? parsed : null
+      root._committedHealthGeneration = generation || root._committedHealthGeneration
       if (root.online) {
         var live = root.plainText(root.activity.provider, 48)
         if (live !== "") root.lastProviderName = live
@@ -392,6 +430,7 @@ Item {
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
       root.health = null
+      root._committedHealthGeneration = generation || root._committedHealthGeneration
       root.updateRouterSummary()
     }
   }
@@ -404,11 +443,12 @@ Item {
     root.requestRefresh()
   }
 
-  function dispatchDataRecipe(demand) {
+  function dispatchDataRecipe(demand, joinsActiveRecipe) {
     if (!root.online || !root.hasCallerSecret) return
 
+    root._activeRecipeCount++
     root.dataLoading = true
-    root.dataRound++
+    if (!joinsActiveRecipe) root.dataRound++
     var rounds = [{ command: "control_snapshot", prop: "snapshot" },
                   { command: "provider_setup", prop: "providerSetup" },
                   { command: "provider_usage", prop: "providerUsage" }]
@@ -418,10 +458,14 @@ Item {
     var firstSharedError = ""
     var roundOpen = true
 
-    function receive(round, value, error) {
+    function receive(round, generation, value, error) {
       if (error === null) {
         gotFresh = true
-        root[round.prop] = value
+        var committed = Number(root._committedCommandGeneration[round.command]) || 0
+        if (generation >= committed) {
+          root[round.prop] = value
+          root._committedCommandGeneration[round.command] = generation
+        }
       } else if (firstSharedError === "") {
         firstSharedError = error
       }
@@ -433,20 +477,49 @@ Item {
       pending--
       if (pending > 0) return
       roundOpen = false
-      root.dataLoading = false
+      root._activeRecipeCount = Math.max(0, root._activeRecipeCount - 1)
+      root.dataLoading = root._activeRecipeCount > 0
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = root.clock.now()
       root.consumePendingDemand()
     }
 
     function receiverFor(round) {
-      return function(value, error) { receive(round, value, error) }
+      return function(value, error, generation) { receive(round, generation, value, error) }
     }
 
-    for (var i = 0; i < rounds.length; i++)
-      root.io.invoke(rounds[i].command, {}, receiverFor(rounds[i]))
+    for (var i = 0; i < rounds.length; i++) {
+      root.invokeShared(rounds[i].command, {}, receiverFor(rounds[i]))
+    }
 
     refreshAccountUsage()
+  }
+
+  // The command boundary, rather than a particular View recipe, owns
+  // coalescing. This keeps a Status and Providers demand from issuing the
+  // same Snapshot read when their recipes overlap.
+  function invokeShared(command, args, receiver) {
+    var active = root._inFlightCommands[command]
+    if (active) {
+      active.receivers.push(receiver)
+      return active.generation
+    }
+
+    var generation = (Number(root._nextCommandGeneration[command]) || 0) + 1
+    root._nextCommandGeneration[command] = generation
+    active = { generation: generation, receivers: [receiver] }
+    root._inFlightCommands[command] = active
+    root.io.invoke(command, args, function(value, error) {
+      if (active.settled) return
+      active.settled = true
+      // Remove before notifying receivers: a callback can synchronously stage
+      // the next round, which must receive a new generation.
+      if (root._inFlightCommands[command] === active)
+        delete root._inFlightCommands[command]
+      for (var index = 0; index < active.receivers.length; index++)
+        active.receivers[index](value, error, generation)
+    })
+    return generation
   }
 
   // Fully independent: own flag, no share of dataLoading/pending, so a hung
