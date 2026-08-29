@@ -8,15 +8,22 @@ import "../ui"
 // signed routing), request activity, and maintenance actions — the summary
 // view the panel opens on.
 //
-// The panel hands over the service, its own coordinator surface (`panel`:
-// runAction/domainNotice/activeControlKey, so busy and error notices follow
-// the control that started them across views), the live clock and the palette.
+// The panel hands over the two reader projections — the Router summary for
+// live Router facts, the active-View projection for this View's own Snapshot
+// facts, freshness and read error — the ControlProcess its mutations run
+// through, its own coordinator surface (`panel`: runAction/domainNotice/
+// activeControlKey, so busy and error notices follow the control that started
+// them across views), the live clock and the palette.
 Item {
   id: statusRoot
 
   // ------------------------------------------------------------- contract
 
+  // Facts arrive as projections; `service` remains only for the semantic
+  // web-panel operation, which is a reader intent rather than a fact.
   property var service: null
+  property var summary: null
+  property var projection: null
   property var controlProcess: null
   property var panel: null
   property double nowMs: 0
@@ -36,16 +43,17 @@ Item {
   // True while nothing user-facing should accept clicks: the router is
   // unreachable or a mutation is already running. Service start is the one
   // action exempt by design (see runAction on the panel).
-  readonly property bool actionsLocked: !service || !service.online
+  readonly property bool actionsLocked: !summary || !summary.online
     || !controlProcess || controlProcess.mutationRunning
 
-  // One guard for every section that needs live, authenticated data.
-  readonly property bool controlsReachable: !!service && service.online
-    && service.hasCallerSecret
+  // One guard for every section that needs live, authenticated data: the
+  // reader's global blocking condition is exactly that question.
+  readonly property bool controlsReachable: !!statusRoot.projection
+    && statusRoot.projection.blockingReason === ""
 
-  // The codex target block of the snapshot — everything the mode switches
-  // reflect. Empty object until the first read lands.
-  readonly property var codexTarget: service ? service.codexTarget : ({})
+  // The codex target block of this View's own Snapshot — everything the mode
+  // switches reflect. Empty object until Status's first read commits.
+  readonly property var codexTarget: projection ? projection.target : ({})
   readonly property bool loginFree: statusRoot.codexTarget.loginFree === true
   readonly property bool signedRouting: statusRoot.codexTarget.signedRouting === true
 
@@ -63,8 +71,8 @@ Item {
   // managed default model. Both are informational for this plugin's
   // operator: the codex target's own pass-through is unaffected by session
   // sharing, and the default model is a router pin, not a control here.
-  readonly property string chatgptSessionLine: statusRoot.service
-    ? Model.chatgptSessionSummary(statusRoot.service.chatgptSession) : ""
+  readonly property string chatgptSessionLine: statusRoot.projection
+    ? Model.chatgptSessionSummary(statusRoot.projection.chatgptSession) : ""
   readonly property string routerDefaultLine: Model.routerDefaultCatalogModelSummary(statusRoot.codexTarget)
 
   height: column.implicitHeight
@@ -90,7 +98,7 @@ Item {
       id: modesSection
       // The toggles mirror snapshot state; without a first read they
       // would show "off" as if it were the truth.
-      visible: statusRoot.controlsReachable && !!statusRoot.service.snapshot
+      visible: statusRoot.controlsReachable && !!statusRoot.projection.snapshot
       width: parent.width
       spacing: Style.spacing.md
 
@@ -184,7 +192,7 @@ Item {
     // ---------- Activity ----------
     Column {
       id: activitySection
-      visible: !!statusRoot.service && statusRoot.service.online
+      visible: !!statusRoot.summary && statusRoot.summary.online
       width: parent.width
       spacing: Style.spacing.md
 
@@ -198,10 +206,10 @@ Item {
       // Idle collapses to one honest line; traffic lists itself.
       Text {
         textFormat: Text.PlainText
-        visible: statusRoot.service && statusRoot.service.activeCount === 0
+        visible: statusRoot.summary && statusRoot.summary.activeCount === 0
         width: parent.width
         text: {
-          var provider = statusRoot.service ? statusRoot.service.lastProviderName : ""
+          var provider = statusRoot.summary ? statusRoot.summary.providerName : ""
           return provider !== ""
             ? "Idle — last routed via " + provider
             : "Idle — no routed requests yet."
@@ -213,7 +221,7 @@ Item {
       }
 
       Repeater {
-        model: statusRoot.service ? statusRoot.service.activeRequests : []
+        model: statusRoot.summary ? statusRoot.summary.activeRequests : []
 
         Column {
           id: requestRow
@@ -289,7 +297,7 @@ Item {
 
     Column {
       id: maintenanceSection
-      visible: !!statusRoot.service
+      visible: !!statusRoot.summary
       width: parent.width
       spacing: Style.spacing.md
 
@@ -303,7 +311,7 @@ Item {
       // Offline, starting the service is the one action that makes
       // sense — everything else needs a router to talk to.
       Button {
-        visible: !statusRoot.service || !statusRoot.service.online
+        visible: !statusRoot.summary || !statusRoot.summary.online
         width: parent.width
         readonly property bool mine: !!statusRoot.panel && statusRoot.panel.activeControlKey === "start"
           && !!statusRoot.controlProcess && statusRoot.controlProcess.mutationRunning
@@ -318,7 +326,7 @@ Item {
       }
 
       Row {
-        visible: !!statusRoot.service && statusRoot.service.online
+        visible: !!statusRoot.summary && statusRoot.summary.online
         width: parent.width
         spacing: Style.spacing.sm
 
@@ -371,7 +379,7 @@ Item {
       }
 
       Button {
-        visible: !!statusRoot.service && statusRoot.service.online
+        visible: !!statusRoot.summary && statusRoot.summary.online
         width: parent.width
         text: "Open web panel"
         tooltipText: "Opens the router's browser panel — sign-ins and API keys live there"

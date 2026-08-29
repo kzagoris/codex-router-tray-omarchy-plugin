@@ -190,9 +190,8 @@ Panel {
   // One box, worst news first: an unreachable router beats a missing key
   // beats a failed read beats degradation — each earlier line makes the
   // later ones unreadable anyway. The first two are the reader's global
-  // condition and belong here permanently. `dataError` is still the old
-  // whole-Panel read failure: the View migrations (tickets 11-14) move it to
-  // the View that required the failed fact, and it leaves this box then.
+  // condition and belong here permanently. The read failure below is the
+  // visible View's own: a fact that View never required cannot speak for it.
   readonly property string statusMessage: {
     if (root.blockingReason === "offline")
       return "Router offline — start it with systemctl --user start codex-router."
@@ -200,8 +199,8 @@ Panel {
       return "Caller key missing or unreadable — recreate it below, or run ./bin/doctor --fix."
     // Past the global condition every remaining line needs a reader to
     // describe; without one, "offline" above has already said everything.
-    if (!service) return ""
-    if (service.dataError !== "") return service.dataError
+    if (!viewProjection) return ""
+    if (viewProjection.readError !== "") return viewProjection.readError
     if (summary.degraded)
       return Model.degradedSentence(summary.degradedNames)
     return ""
@@ -241,9 +240,13 @@ Panel {
 
   // ---------------------------------------------------------------- misc
 
+  // The caption describes the View on screen: its stamp advances only once
+  // every fact that View required has succeeded, so it never presents a
+  // partial round — or another View's round — as this one's freshness.
   function updatedCaption() {
-    if (!service || service.lastUpdatedAt <= 0) return ""
-    return "Updated " + Model.formatClock(new Date(service.lastUpdatedAt))
+    if (!viewProjection || viewProjection.freshAt <= 0) return ""
+    return viewProjection.view + " updated "
+      + Model.formatClock(new Date(viewProjection.freshAt))
   }
 
   KeyboardPanel {
@@ -398,6 +401,8 @@ Panel {
             visible: root.selectedView === 0
             width: parent.width
             service: root.service
+            summary: root.summary
+            projection: root.viewProjection
             controlProcess: root.controlProcess
             panel: root
             nowMs: root.nowMs

@@ -255,6 +255,17 @@ Item {
     property int dataRevision: 0
     property int revision: 0
     property var snapshot: null
+    // Snapshot-derived facts, shaped once here so no View re-derives payload
+    // paths. Empty objects until this View's own Snapshot commits.
+    readonly property var target: {
+      var targets = activeViewProjectionObject.snapshot
+        && activeViewProjectionObject.snapshot.targets
+        ? activeViewProjectionObject.snapshot.targets : null
+      return targets && targets.codex ? targets.codex : ({})
+    }
+    readonly property var chatgptSession: activeViewProjectionObject.snapshot
+      && activeViewProjectionObject.snapshot.chatgptSession
+      ? activeViewProjectionObject.snapshot.chatgptSession : ({})
     property var providerSetup: null
     property var providerUsage: null
     property var accountUsage: null
@@ -264,9 +275,11 @@ Item {
   }
   readonly property var activeViewProjection: activeViewProjectionObject
 
-  // The codex target block of the snapshot — everything the mode switches
-  // and provider toggles reflect. Empty object until the first read lands;
-  // one home for the shaping so no view re-derives it.
+  // The codex target block of the last raw Snapshot — everything the mode
+  // switches and provider toggles reflect. Empty object until the first read
+  // lands. Status reads the same shape off its own View record instead (see
+  // the projection above); this legacy surface serves the Views that have not
+  // migrated yet and goes with the rest of them in ticket 18.
   readonly property var codexTarget: {
     var targets = root.snapshot && root.snapshot.targets ? root.snapshot.targets : null
     return targets && targets.codex ? targets.codex : {}
@@ -663,21 +676,51 @@ Item {
     return demand.forcesSnapshot === true || !root._snapshotCacheValid
   }
 
+  // Which facts a demand is willing to pay for. Entering a View reads exactly
+  // what that View renders — entering Status must not buy Provider facts it
+  // never shows. Every other demand keeps the broad recipe until the ticket
+  // that owns it says otherwise: 13 for the checking Proof, 15 for Refresh,
+  // 16 for reconciliation.
+  function commandsForDemand(demand) {
+    if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
+    return ["control_snapshot", "provider_setup", "provider_usage"]
+  }
+
+  // The one place a Router command is paired with the fact it fills.
+  readonly property var factProperties: ({
+    control_snapshot: "snapshot",
+    provider_setup: "providerSetup",
+    provider_usage: "providerUsage"
+  })
+  function factPropertyFor(command) {
+    return root.factProperties[command] || ""
+  }
+
   function dispatchDataRecipe(demand, joinsActiveRecipe) {
     if (!root.online || !root.hasCallerSecret) return
 
-    root._activeRecipeCount++
-    root.dataLoading = true
-    if (!joinsActiveRecipe) root.dataRound++
-    var readsSnapshot = root.shouldReadSnapshot(demand)
+    var commands = root.commandsForDemand(demand)
+    var readsSnapshot = commands.indexOf("control_snapshot") !== -1
+      && root.shouldReadSnapshot(demand)
     // A Snapshot read in flight is already replacing the cache, so demand
     // arriving beside it joins that request rather than committing the
     // payload it supersedes.
     if (readsSnapshot) root._snapshotCacheValid = false
     var rounds = []
-    if (readsSnapshot) rounds.push({ command: "control_snapshot", prop: "snapshot" })
-    rounds.push({ command: "provider_setup", prop: "providerSetup" })
-    rounds.push({ command: "provider_usage", prop: "providerUsage" })
+    for (var commandIndex = 0; commandIndex < commands.length; commandIndex++) {
+      var command = commands[commandIndex]
+      if (command === "control_snapshot" && !readsSnapshot) continue
+      var prop = root.factPropertyFor(command)
+      if (prop !== "") rounds.push({ command: command, prop: prop })
+    }
+    // Demand a valid cache answers in full reads nothing, so it opens no
+    // physical recipe: no loading state, no round, no account-usage ride.
+    var readsAnything = rounds.length > 0
+    if (readsAnything) {
+      root._activeRecipeCount++
+      root.dataLoading = true
+      if (!joinsActiveRecipe) root.dataRound++
+    }
 
     var pending = rounds.length
     var gotFresh = false
@@ -776,6 +819,13 @@ Item {
       return function(value, error, generation, epoch) {
         receive(round, generation, value, error, epoch)
       }
+    }
+
+    if (!readsAnything) {
+      // Nothing was dispatched, so no completion callback will drain the
+      // queue: whatever else is waiting gets its chance here instead.
+      root.consumePendingDemand()
+      return
     }
 
     for (var i = 0; i < rounds.length; i++) {
