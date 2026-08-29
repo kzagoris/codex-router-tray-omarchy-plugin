@@ -151,6 +151,10 @@ Item {
   // for Models is pending or in flight. Queued toggles stay visible until
   // that Snapshot (success or failure) settles.
   property bool _awaitingReconciliation: false
+  // The reader's number for the reconciliation this view last asked for. A
+  // second drain while the first reconciling read is still in flight must not
+  // be retired by that older read's answer.
+  property int _awaitingReconciliationSeq: 0
 
   // Switching the setting moves the operator away from the row that failed,
   // so its message goes with them.
@@ -249,18 +253,16 @@ Item {
       return
     }
     modelsRoot._awaitingReconciliation = true
-    modelsRoot.service.reportMutationOutcome("Models", "none")
+    modelsRoot._awaitingReconciliationSeq =
+      modelsRoot.service.reportMutationOutcome("Models", "none")
   }
 
   // A pending toggle that nothing will confirm goes back to what the last
   // successful read said. Never on screen: a setting that did not take.
   function _clearPendingReconciliation() {
     modelsRoot._awaitingReconciliation = false
+    modelsRoot._awaitingReconciliationSeq = 0
     modelsRoot.overrides = { picker: ({}), subagents: ({}) }
-  }
-
-  function _giveUpReconciling() {
-    modelsRoot._clearPendingReconciliation()
   }
 
   // Nothing can be applied: drop the queue, drop every optimistic toggle so
@@ -269,6 +271,7 @@ Item {
     modelsRoot._queue = []
     modelsRoot.overrides = { picker: ({}), subagents: ({}) }
     modelsRoot._awaitingReconciliation = false
+    modelsRoot._awaitingReconciliationSeq = 0
     modelsRoot.errorNotice = message
     modelsRoot._errorKey = ""
   }
@@ -281,10 +284,13 @@ Item {
     // reconciling Snapshot read settles it. Success and failure both retire
     // the optimistic toggles — a failed Snapshot cannot confirm the change,
     // so the view falls back to Router truth rather than parking the toggle.
-    function onReconciliationSettled(view, success) {
+    function onReconciliationSettled(view, success, requestSeq) {
       if (String(view) !== "Models") return
       if (!modelsRoot._awaitingReconciliation) return
       if (modelsRoot.busy || modelsRoot._queue.length > 0) return
+      // An answer to a request older than this view's latest drain describes
+      // Router truth from before that drain ran.
+      if (requestSeq < modelsRoot._awaitingReconciliationSeq) return
       modelsRoot._clearPendingReconciliation()
     }
   }

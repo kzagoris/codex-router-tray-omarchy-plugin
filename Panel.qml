@@ -46,8 +46,8 @@ Panel {
   // so this alias-by-property is the only route to it.
   readonly property var service: hostWidget ? hostWidget.routerService : null
   // ControlProcess is a sibling of RouterService in BarWidget. Mutations use
-  // it directly; the bar composition connects successful jobs to reader
-  // reconciliation.
+  // it directly and report their semantic outcome — originating View and
+  // recovery requirement — to the reader, which maps it to the right reads.
   readonly property var controlProcess: hostWidget ? hostWidget.controlProcess : null
 
   // The two stable reader projections. Chrome reads Router facts from the
@@ -238,8 +238,7 @@ Panel {
     root.controlProcess.runControl(label, args, function(error) {
       if (error === null) {
         root.actionDomain = ""
-        if (root.service && typeof root.service.reportMutationOutcome === "function")
-          root.service.reportMutationOutcome(originatingView, recovery)
+        if (root.service) root.service.reportMutationOutcome(originatingView, recovery)
       }
       root.activeControlKey = ""
     })
@@ -479,8 +478,12 @@ Panel {
 
           Button {
             width: parent.width
-            text: root.viewProjection && root.viewProjection.refreshing ? "Refreshing…" : "Refresh"
-            enabled: !!root.viewProjection && !root.viewProjection.refreshing
+            // Global read state, not the visible View's own: an explicit
+            // Refresh owes every Panel fact, so the button stays busy until
+            // the whole read is done rather than re-arming on the first View
+            // that happens to commit (11, 15).
+            text: root.service && root.service.reading ? "Refreshing…" : "Refresh"
+            enabled: !!root.service && !root.service.reading
             bordered: true
             foreground: root.foreground
             fontFamily: root.fontFamily

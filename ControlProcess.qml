@@ -13,9 +13,10 @@ import Quickshell.Io
 // time; further requests queue behind it so a slow catalog rebuild can
 // never overlap a toggle clicked in impatience.
 //
-// Refresh policy is deliberately NOT here: a successful job is announced
-// via jobSucceeded(args), and BarWidget composition decides what a fresh read
-// looks like, so "mutate, then re-read" stays in exactly one place.
+// Refresh policy is deliberately NOT here. A caller that runs a mutation
+// reports its semantic outcome — the View it originated from and whether the
+// Router must come back first — to RouterService, which maps that to the
+// right reads. Control CLI vocabulary never reaches the reader.
 Item {
   id: root
 
@@ -25,11 +26,6 @@ Item {
   property bool mutationRunning: false
   property string mutationLabel: ""
   property string mutationError: ""
-
-  // Emitted after onDone(null) for every successful run, with the exact
-  // args that ran. Service commands bounce the daemon, so the consumer
-  // delays their re-read.
-  signal jobSucceeded(var args)
 
   // Candidate order as the tray resolves it: explicit setting, then env,
   // then the standard data locations — but like the tray, a candidate only
@@ -118,8 +114,8 @@ Item {
 
   // onDone(error): error === null on success, human-readable otherwise. The
   // CLI's own output is deliberately not handed back — every consumer wants
-  // fresh state, and fresh state comes from the standard HTTP re-read, so
-  // "mutate, then re-read" lives in exactly one place (see jobSucceeded).
+  // fresh state, and fresh state comes from the reader's own reconciling
+  // read, so "mutate, then re-read" lives in exactly one place.
   function runControl(label, args, onDone) {
     var clean = []
     for (var i = 0; i < args.length; i++) {
@@ -170,7 +166,7 @@ Item {
   }
 
   // Shared tail of every control run: release the lock, record the error,
-  // hand the result back, announce success, pull the next queued job.
+  // hand the result back, pull the next queued job.
   function _finishControlJob(error, exitCode) {
     controlWatchdog.stop()
 
@@ -187,9 +183,8 @@ Item {
     if (error !== null) {
       root.mutationError = error
       if (finishedJob && finishedJob.onDone) finishedJob.onDone(error)
-    } else {
-      if (finishedJob && finishedJob.onDone) finishedJob.onDone(null)
-      if (finishedJob) root.jobSucceeded(finishedJob.args)
+    } else if (finishedJob && finishedJob.onDone) {
+      finishedJob.onDone(null)
     }
 
     root._drainControl()
