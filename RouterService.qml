@@ -51,6 +51,19 @@ Item {
 
   // Authenticated reads. Null = never fetched or last fetch failed.
   property var snapshot: null
+  // Snapshot is read for a reason, never on cadence. Status, Providers and
+  // Models share the one payload: `_snapshotCacheValid` says it may satisfy
+  // entry demand without a read, `_snapshotCurrent` says the facts already
+  // published from it still describe a live Router.
+  property bool _snapshotCacheValid: false
+  property bool _snapshotCurrent: false
+  // When the cached payload was proved. A View answered from cache is fresh
+  // as of that read, not as of the demand that reused it.
+  property double _snapshotFreshAt: 0
+  // Bumped on every Router reachability transition. A command dispatched in an
+  // older epoch cannot answer for the Router that answers now, however
+  // reachable the Router happens to be when its result lands.
+  property int _routerEpoch: 0
   property var providerSetup: null
   property var providerUsage: null
 
@@ -148,7 +161,24 @@ Item {
     root.pollHealth()
     root.requestViewEntry(root.activeView)
   }
-  onOnlineChanged: root.updateActiveViewProjection()
+  onOnlineChanged: {
+    root._routerEpoch++
+    if (!root.online) {
+      // Going offline keeps the payload and every complete View projection,
+      // but neither counts as current: a Router that dropped may come back
+      // with different settings, so retained facts are marked stale.
+      root._snapshotCacheValid = false
+      root._snapshotCurrent = false
+      root.updateActiveViewProjection()
+      return
+    }
+    // Recovery discards cache validity rather than the facts, so the next
+    // Snapshot-backed demand reads exactly once. A visible reader asks now;
+    // a closed one leaves the obligation for its next entry.
+    root._snapshotCacheValid = false
+    root.updateActiveViewProjection()
+    root.requestViewEntry(root.activeView)
+  }
   onPanelOpenChanged: if (!root.panelOpen) root.cancelInvisibleDemand()
   onCheckingProofVisibleChanged: if (!root.checkingProofVisible) root.cancelInvisibleDemand()
 
@@ -218,6 +248,9 @@ Item {
     property string blockingReason: "offline"
     property string readError: ""
     property double freshAt: 0
+    // A Snapshot-backed View whose retained facts have not been re-proved
+    // since the Router was last reachable.
+    property bool stale: false
     property int dataRevision: 0
     property int revision: 0
     property var snapshot: null
@@ -268,6 +301,12 @@ Item {
     return ["Status", "Usage", "Providers", "Models"].indexOf(String(view)) !== -1
   }
 
+  // Status, Providers and Models read their facts from the shared Snapshot;
+  // Usage does not, so Snapshot policy never describes it.
+  function isSnapshotBackedView(view) {
+    return root.requiredCommandsForView(view).indexOf("control_snapshot") !== -1
+  }
+
   function requiredCommandsForView(view) {
     if (view === "Usage") return ["provider_setup", "provider_usage"]
     if (view === "Providers") return ["control_snapshot", "provider_setup"]
@@ -312,6 +351,9 @@ Item {
     var visibleReadError = blocking === "" ? record.readError : ""
     if (projection.readError !== visibleReadError) { projection.readError = visibleReadError; changed = true }
     if (projection.freshAt !== record.freshAt) { projection.freshAt = record.freshAt; changed = true }
+    var stale = root.isSnapshotBackedView(record.view) && record.revision > 0
+      && !root._snapshotCurrent
+    if (projection.stale !== stale) { projection.stale = stale; changed = true }
     if (projection.dataRevision !== record.revision) { projection.dataRevision = record.revision; changed = true }
     if (projection.snapshot !== record.snapshot) { projection.snapshot = record.snapshot; changed = true }
     if (projection.providerSetup !== record.providerSetup) { projection.providerSetup = record.providerSetup; changed = true }
@@ -343,7 +385,7 @@ Item {
     return { record: record, token: record.readToken }
   }
 
-  function finishViewRead(read, required, staged, failedError, allRequiredFresh) {
+  function finishViewRead(read, required, staged, failedError, allRequiredFresh, freshAtCeiling) {
     var record = read.record
     record.refreshing = Math.max(0, record.refreshing - 1)
     // A newer logical read owns the record's publication. Older shared
@@ -370,7 +412,10 @@ Item {
     if (required.indexOf("control_snapshot") !== -1) record.snapshot = staged.snapshot
     if (required.indexOf("provider_setup") !== -1) record.providerSetup = staged.providerSetup
     if (required.indexOf("provider_usage") !== -1) record.providerUsage = staged.providerUsage
-    record.freshAt = root.clock.now()
+    // Facts reused from cache cap this View's freshness at the read that
+    // proved them: reusing a payload is not re-reading it.
+    var now = root.clock.now()
+    record.freshAt = freshAtCeiling > 0 ? Math.min(now, freshAtCeiling) : now
     // Revision is assigned last: it marks a fully published fact set.
     record.revision++
     root.updateActiveViewProjection()
@@ -413,6 +458,11 @@ Item {
     var demand = {
       kind: kind,
       view: view || root.activeView,
+      // Operator intent, mutation reconciliation and a visible checking Proof
+      // want Router truth, not the cache — decided when the intent is formed,
+      // so a Snapshot committed while it waits cannot answer for it.
+      forcesSnapshot: kind === "refresh" || kind === "reconciliation"
+        || kind === "checking-proof",
       trailing: root.dataLoading && (kind === "refresh" || kind === "reconciliation")
     }
     if (root.isVisibilityDemand(demand) && !root.demandIsStillVisible(demand)) return
@@ -478,6 +528,14 @@ Item {
   }
   function requestReconciliation(originatingView) {
     root.stageDemand("reconciliation", originatingView)
+  }
+
+  // The hook mutation reconciliation calls when a change may have moved
+  // Snapshot settings, so the cached payload stops answering demand until it
+  // is re-read. It reads nothing itself; the next demand does. Ticket 16 maps
+  // which mutation outcomes are relevant enough to call it.
+  function invalidateSnapshotCache() {
+    root._snapshotCacheValid = false
   }
   function requestCheckingProof(view) {
     root.stageDemand("checking-proof", view)
@@ -589,15 +647,28 @@ Item {
     root.requestRefresh()
   }
 
+  // There is no ordinary Snapshot cadence. Otherwise a demand reads Snapshot
+  // when it forces Router truth or when no valid cache can answer it.
+  function shouldReadSnapshot(demand) {
+    if (demand.kind === "cadence") return false
+    return demand.forcesSnapshot === true || !root._snapshotCacheValid
+  }
+
   function dispatchDataRecipe(demand, joinsActiveRecipe) {
     if (!root.online || !root.hasCallerSecret) return
 
     root._activeRecipeCount++
     root.dataLoading = true
     if (!joinsActiveRecipe) root.dataRound++
-    var rounds = [{ command: "control_snapshot", prop: "snapshot" },
-                  { command: "provider_setup", prop: "providerSetup" },
-                  { command: "provider_usage", prop: "providerUsage" }]
+    var readsSnapshot = root.shouldReadSnapshot(demand)
+    // A Snapshot read in flight is already replacing the cache, so demand
+    // arriving beside it joins that request rather than committing the
+    // payload it supersedes.
+    if (readsSnapshot) root._snapshotCacheValid = false
+    var rounds = []
+    if (readsSnapshot) rounds.push({ command: "control_snapshot", prop: "snapshot" })
+    rounds.push({ command: "provider_setup", prop: "providerSetup" })
+    rounds.push({ command: "provider_usage", prop: "providerUsage" })
 
     var pending = rounds.length
     var gotFresh = false
@@ -607,11 +678,33 @@ Item {
     var viewRead = root.beginViewRead(demand.view)
     var staged = { snapshot: null, providerSetup: null, providerUsage: null }
     var requiredError = ""
-    var requiredPending = required.length
+    var requiredPending = 0
     var allRequiredFresh = true
     var viewReadOpen = true
+    var freshAtCeiling = 0
 
-    function receive(round, generation, value, error) {
+    for (var factIndex = 0; factIndex < required.length; factIndex++) {
+      if (required[factIndex] === "control_snapshot" && !readsSnapshot) {
+        // A valid cache is this View's Snapshot answer for demand that asked
+        // for the View's facts. An ordinary cadence is not such demand: it
+        // read nothing here, so it leaves the read incomplete rather than
+        // restamping unchanged facts as newly fresh.
+        if (root._snapshotCacheValid && demand.kind !== "cadence") {
+          staged.snapshot = root.snapshot
+          freshAtCeiling = root._snapshotFreshAt
+        } else allRequiredFresh = false
+      } else {
+        requiredPending++
+      }
+    }
+    // Entry demand answered entirely from cache completes without any read.
+    if (requiredPending === 0) {
+      viewReadOpen = false
+      root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh,
+        freshAtCeiling)
+    }
+
+    function receive(round, generation, value, error, epoch) {
       var accepted = false
       if (error === null) {
         gotFresh = true
@@ -620,6 +713,16 @@ Item {
           root[round.prop] = value
           root._committedCommandGeneration[round.command] = generation
           accepted = true
+          // Only a Snapshot proved against a reachable Router validates the
+          // shared cache; one that lands after the Router dropped is exactly
+          // the unverified payload recovery must not inherit.
+          if (round.command === "control_snapshot" && root.online
+              && epoch === root._routerEpoch) {
+            root._snapshotCacheValid = true
+            root._snapshotCurrent = true
+            root._snapshotFreshAt = root.clock.now()
+            root.updateActiveViewProjection()
+          }
         }
       } else if (firstSharedError === "") {
         firstSharedError = error
@@ -637,7 +740,8 @@ Item {
         // the broad physical recipe may still be serving unrelated caches.
         if (requiredPending === 0 && viewReadOpen) {
           viewReadOpen = false
-          root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh)
+          root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh,
+            freshAtCeiling)
         }
       }
 
@@ -660,7 +764,9 @@ Item {
     }
 
     function receiverFor(round) {
-      return function(value, error, generation) { receive(round, generation, value, error) }
+      return function(value, error, generation, epoch) {
+        receive(round, generation, value, error, epoch)
+      }
     }
 
     for (var i = 0; i < rounds.length; i++) {
@@ -675,14 +781,17 @@ Item {
   // same Snapshot read when their recipes overlap.
   function invokeShared(command, args, receiver) {
     var active = root._inFlightCommands[command]
-    if (active) {
+    // A request that left before the Router last changed reachability cannot
+    // answer demand raised after it: recovery would otherwise be satisfied by
+    // a read the restarted Router never saw.
+    if (active && active.epoch === root._routerEpoch) {
       active.receivers.push(receiver)
       return active.generation
     }
 
     var generation = (Number(root._nextCommandGeneration[command]) || 0) + 1
     root._nextCommandGeneration[command] = generation
-    active = { generation: generation, receivers: [receiver] }
+    active = { generation: generation, epoch: root._routerEpoch, receivers: [receiver] }
     root._inFlightCommands[command] = active
     root.io.invoke(command, args, function(value, error) {
       if (active.settled) return
@@ -692,7 +801,7 @@ Item {
       if (root._inFlightCommands[command] === active)
         delete root._inFlightCommands[command]
       for (var index = 0; index < active.receivers.length; index++)
-        active.receivers[index](value, error, generation)
+        active.receivers[index](value, error, generation, active.epoch)
     })
     return generation
   }
