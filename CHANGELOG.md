@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is `0.major.minor` while the plugin is pre-1.0; payload shapes are
 verified against the codex-router version noted in each entry.
 
-## [Unreleased]
+## [0.5.0] — 2026-08-29
 
 Limits are shown by default and scoped to the selected Provider
 (`scratch/011`, `ADR-0002`). No payload shape change; one manifest setting
