@@ -17,6 +17,11 @@ Item {
   property int dataIntervalSec: 30
   readonly property int healthCadenceMs: Math.max(2, root.healthIntervalSec) * 1000
   readonly property int dataCadenceMs: Math.max(15, root.dataIntervalSec) * 1000
+  // A capability probe the Router runs on its own settles into proven or
+  // failed without anybody asking, so a visible checking Proof earns a short
+  // Snapshot-only cadence — the one timed Snapshot exception (ADR-0001).
+  property int proofIntervalSec: 4
+  readonly property int proofCadenceMs: Math.max(2, root.proofIntervalSec) * 1000
   readonly property int lifecycleRecoveryDelayMs: 3000
   // Composed by BarWidget. The adapter owns timer mechanics and wall-clock
   // access; this reader decides when each cadence is useful.
@@ -108,8 +113,9 @@ Item {
   property bool readerPresent: false
   property string activeView: "Status"
   property bool _normalizingActiveView: false
-  // Later Models migration declares this while a visible Proof is checking.
-  // It is here now so staged checking demand has the same cancellation rule as
+  // Models declares this while one of its visible rows holds a checking Proof.
+  // It is a condition, not a command: RouterService owns the cadence that
+  // answers it, and staged checking demand obeys the same cancellation rule as
   // the other visibility work.
   property bool checkingProofVisible: false
   property var _viewRecords: ({})
@@ -683,7 +689,13 @@ Item {
   // 16 for reconciliation.
   function commandsForDemand(demand) {
     if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
-    if (demand.kind === "cadence" && demand.view === "Providers") return []
+    // Providers and Models have no authenticated cadence: their facts change
+    // only through operator action, and Snapshot never polls.
+    if (demand.kind === "cadence"
+        && (demand.view === "Providers" || demand.view === "Models")) return []
+    // The Proof exception buys exactly the Snapshot that carries the verdict,
+    // and no unrelated Usage work.
+    if (demand.kind === "checking-proof") return ["control_snapshot"]
     return ["control_snapshot", "provider_setup", "provider_usage"]
   }
 
@@ -920,15 +932,24 @@ Item {
     healthIntervalMs: root.healthCadenceMs
     dataIntervalMs: root.dataCadenceMs
     lifecycleDelayMs: root.lifecycleRecoveryDelayMs
+    proofIntervalMs: root.proofCadenceMs
     // Router health remains live for the bar widget even when the Panel is
     // closed; this is reader policy, not a clock default.
     healthCadenceActive: true
     dataCadenceActive: (root.panelOpen || root.readerPresent)
       && root.online && root.hasCallerSecret
+    // The exception ends the moment its condition, its View or the reader
+    // does, so it can never decay into general Snapshot polling.
+    proofCadenceActive: (root.panelOpen || root.readerPresent)
+      && root.activeView === "Models" && root.checkingProofVisible
+      && root.online && root.hasCallerSecret
 
     onHealthCadenceDue: root.pollHealth()
     onDataCadenceDue: {
       root.requestCadence()
+    }
+    onProofCadenceDue: {
+      root.requestCheckingProof(root.activeView)
     }
     onRecoveryDelayDue: {
       root.pollHealth()

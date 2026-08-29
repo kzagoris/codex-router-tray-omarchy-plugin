@@ -18,12 +18,21 @@ import "../ui"
 // count. This file binds to what that returns and owns the transport side —
 // the optimistic overrides, the coalescing runner over the control CLI, and
 // the single re-read when the runner drains.
+//
+// The panel hands over the active-View projection carrying this View's own
+// catalog models, model settings and Proofs. Entering the view is a
+// declaration the panel makes, so nothing here composes a read; the one
+// condition this view owns is whether a visible row holds a checking Proof,
+// which RouterService answers with its own short Snapshot-only cadence.
 Item {
   id: modelsRoot
 
   // ------------------------------------------------------------- contract
 
+  // Facts arrive as projections; `service` remains for the checking-Proof
+  // condition and for the queue-drain reconciliation that ticket 17 owns.
   property var service: null
+  property var projection: null
   // The sibling ControlProcess supplied by Panel. It runs mutations while
   // RouterService remains a reader-only module.
   property var controlProcess: null
@@ -31,9 +40,9 @@ Item {
   // Providers). Views are selected by index there.
   property var panel: null
   property double nowMs: 0
-  // True while this is the panel's visible view: the snapshot is fetched on
-  // first entry rather than on a timer, and the proof re-read only runs for
-  // a reader.
+  // True while this is the panel's visible view. The panel's own View
+  // declaration buys the snapshot; this flag scopes the checking-Proof
+  // condition and the optimistic-override reset to a visible reader.
   property bool active: false
 
   // Palette, handed over by the panel.
@@ -44,8 +53,11 @@ Item {
 
   // ------------------------------------------------------- derived state
 
-  readonly property bool controlsReachable: !!service && !!controlProcess && service.online
-    && service.hasCallerSecret
+  // One guard for every section that needs live, authenticated data: the
+  // reader's global blocking condition is exactly that question, plus the
+  // mutation transport this view's toggles spawn.
+  readonly property bool controlsReachable: !!controlProcess && !!modelsRoot.projection
+    && modelsRoot.projection.blockingReason === ""
 
   // Which setting the single list edits: "picker" or "subagents".
   property string setting: "picker"
@@ -60,7 +72,10 @@ Item {
   // toggle answer the instant it is clicked.
   property var overrides: ({ picker: ({}), subagents: ({}) })
 
-  readonly property var codexTarget: service ? service.codexTarget : ({})
+  // The codex target block of this View's own Snapshot — the catalog models,
+  // model settings and Proofs the list renders. Empty object until Models'
+  // first read commits.
+  readonly property var codexTarget: projection ? projection.target : ({})
 
   readonly property var viewModel: Catalog.viewModel(modelsRoot.codexTarget, {
     setting: modelsRoot.setting,
@@ -72,22 +87,19 @@ Item {
 
   height: column.implicitHeight
 
-  // --------------------------------------------------------- lazy loading
+  // ------------------------------------------------------ checking Proofs
 
   // The catalog is not a payload of its own: it rides in the same
-  // control_snapshot the MODES switches and the provider toggles read, so
-  // opening the panel at all pays for it and this view cannot make that
-  // cheaper without splitting the router's own command. What it can do is
-  // start nothing extra.
+  // control_snapshot the MODES switches and the provider toggles read. The
+  // panel declares Models visible and RouterService ensures a valid Snapshot
+  // for that entry, so this view asks for no read of its own.
   //
-  // First entry pays for the snapshot if nothing else has read it yet. After
-  // that the panel's own refresh and the post-mutation re-read keep it
-  // current — this view starts no timer of its own except the proof re-read
-  // below. Entering while the router is unreachable must not strand the view
-  // on an empty list, so reachability arriving later is a second trigger.
+  // The one state the router changes without being asked is a capability
+  // probe settling into proven or failed. This view reports that condition —
+  // a visible row saying "Working…" — and RouterService owns the short
+  // Snapshot-only cadence that answers it and stops it.
   onActiveChanged: {
     modelsRoot._syncCheckingProofVisibility()
-    modelsRoot._loadIfNeeded()
     // Leaving with a change that nothing will ever reconcile — a failed
     // read, a router that went away — must not park an optimistic toggle
     // for the next visit. A read that is still on its way is not that case:
@@ -99,34 +111,19 @@ Item {
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
   onControlsReachableChanged: {
-    modelsRoot._loadIfNeeded()
     // Nothing is coming to confirm a pending toggle while the router is
     // away, so stop showing it as if something were.
     if (!modelsRoot.controlsReachable) modelsRoot._giveUpReconciling()
   }
   onViewModelChanged: modelsRoot._syncCheckingProofVisibility()
+  // A running mutation is about to re-read the snapshot when its queue
+  // drains, so the Proof exception has nothing to add while one is in flight.
+  onBusyChanged: modelsRoot._syncCheckingProofVisibility()
 
   function _syncCheckingProofVisibility() {
     if (modelsRoot.service)
       modelsRoot.service.checkingProofVisible = modelsRoot.active
-        && modelsRoot.viewModel.anyChecking === true
-  }
-
-  function _loadIfNeeded() {
-    if (!modelsRoot.active || !modelsRoot.controlsReachable) return
-    if (!modelsRoot.service.snapshot) modelsRoot.service.requestViewEntry("Models")
-  }
-
-  // The one state the router changes on its own: a capability probe running
-  // in the background settles into proven or failed without anybody asking.
-  // Re-read on a short interval while a visible row says "Working…", and
-  // stop the moment none do.
-  Timer {
-    interval: 4000
-    repeat: true
-    running: modelsRoot.active && modelsRoot.controlsReachable
-      && modelsRoot.viewModel.anyChecking && !modelsRoot.busy
-    onTriggered: modelsRoot.service.requestCheckingProof("Models")
+        && !modelsRoot.busy && modelsRoot.viewModel.anyChecking === true
   }
 
   // ------------------------------------------------------------ mutations
@@ -588,11 +585,14 @@ Item {
     // ---------- Empty and unreachable states ----------
     Text {
       textFormat: Text.PlainText
-      visible: !modelsRoot.controlsReachable
+      // Only a genuinely blocked reader has a reason to name. Both reasons
+      // come from the projection, so this line can never claim the Router is
+      // offline for some other reason the list happens to be locked.
+      visible: !!modelsRoot.projection && modelsRoot.projection.blockingReason !== ""
       width: parent.width
-      text: !modelsRoot.service || !modelsRoot.service.online
-        ? "Router offline — no catalog to show."
-        : "Caller key missing — the catalog cannot be read."
+      text: modelsRoot.projection.blockingReason === "capability-missing"
+        ? "Caller key missing — the catalog cannot be read."
+        : "Router offline — no catalog to show."
       color: modelsRoot.dim
       font.family: modelsRoot.fontFamily
       font.pixelSize: Style.font.bodySmall

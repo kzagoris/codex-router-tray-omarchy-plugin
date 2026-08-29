@@ -9,12 +9,15 @@ Item {
   property int healthIntervalMs: 0
   property int dataIntervalMs: 0
   property int lifecycleDelayMs: 0
+  property int proofIntervalMs: 0
   property bool healthCadenceActive: false
   property bool dataCadenceActive: false
+  property bool proofCadenceActive: false
   property bool recoveryPending: false
 
   signal healthCadenceDue()
   signal dataCadenceDue()
+  signal proofCadenceDue()
   signal recoveryDelayDue()
 
   function scheduleRecovery() {
@@ -42,6 +45,12 @@ Item {
 
   Binding {
     target: root.clock
+    property: "proofIntervalMs"
+    value: root.proofIntervalMs
+  }
+
+  Binding {
+    target: root.clock
     property: "healthCadenceActive"
     value: root.healthCadenceActive
   }
@@ -50,6 +59,12 @@ Item {
     target: root.clock
     property: "dataCadenceActive"
     value: root.dataCadenceActive
+  }
+
+  Binding {
+    target: root.clock
+    property: "proofCadenceActive"
+    value: root.proofCadenceActive
   }
 
   Connections {
@@ -61,6 +76,10 @@ Item {
 
     function onDataCadence() {
       root.dataCadenceDue()
+    }
+
+    function onProofCadence() {
+      root.proofCadenceDue()
     }
 
     function onLifecycleDelay() {

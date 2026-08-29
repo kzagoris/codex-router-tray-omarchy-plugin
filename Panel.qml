@@ -443,11 +443,12 @@ Panel {
 
           ModelsView {
             visible: root.selectedView === 3
-            // The snapshot is fetched on first entry to this view, not on a
-            // timer: the catalog is the largest payload the panel reads.
+            // Scopes the view's checking-Proof condition to a visible reader;
+            // the snapshot itself follows the panel's own View declaration.
             active: root.selectedView === 3 && root.opened
             width: parent.width
             service: root.service
+            projection: root.viewProjection
             controlProcess: root.controlProcess
             panel: root
             nowMs: root.nowMs
