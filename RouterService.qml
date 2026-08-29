@@ -29,8 +29,6 @@ Item {
   // Production composition supplies RouterIoAdapter; QML tests supply a
   // scripted adapter with the same raw callback contract.
   required property var io
-  // Slow ChatGPT quota call; off until the user asks for it.
-  property bool accountUsageEnabled: false
 
   // The capability secret never crosses this boundary. Consumers only learn
   // whether authenticated effects are available.
@@ -86,7 +84,6 @@ Item {
   on_AccountUsageLoadingChanged: root._updateActiveViewProjection()
   on_AccountUsageErrorChanged: root._updateActiveViewProjection()
   on_AccountUsageFreshAtChanged: root._updateActiveViewProjection()
-  onAccountUsageEnabledChanged: root._updateActiveViewProjection()
 
   // First error from the shared data commands, message truncated to 500
   // chars like the tray does. Empty = last round had no shared failure;
@@ -275,12 +272,9 @@ Item {
       ? activeViewProjectionObject.snapshot.chatgptSession : ({})
     property var providerSetup: null
     property var providerUsage: null
-    // The account-usage sub-state is independent from the core facts above.
-    // `accountUsageEnabled` mirrors the operator's opt-in so the View can
-    // decide whether its LIMITS section exists at all; when it is off the
-    // other four hold their empty shape (null value, not loading, no error,
-    // never fresh).
-    property bool accountUsageEnabled: false
+    // The account-usage sub-state is independent from the core facts above:
+    // it runs on Usage entry and Refresh alone, so a View away from Usage
+    // holds the empty shape (null value, not loading, no error, never fresh).
     property var accountUsage: null
     property bool accountUsageLoading: false
     property string accountUsageError: ""
@@ -373,12 +367,11 @@ Item {
     if (projection.snapshot !== record.snapshot) { projection.snapshot = record.snapshot; changed = true }
     if (projection.providerSetup !== record.providerSetup) { projection.providerSetup = record.providerSetup; changed = true }
     if (projection.providerUsage !== record.providerUsage) { projection.providerUsage = record.providerUsage; changed = true }
-    var hasAccountUsage = record.view === "Usage" && root.accountUsageEnabled
+    var hasAccountUsage = record.view === "Usage"
     var accountValue = hasAccountUsage ? root._accountUsage : null
     var accountLoading = hasAccountUsage && root._accountUsageLoading
     var accountError = hasAccountUsage && blocking === "" ? root._accountUsageError : ""
     var accountFreshAt = hasAccountUsage ? root._accountUsageFreshAt : 0
-    if (projection.accountUsageEnabled !== root.accountUsageEnabled) { projection.accountUsageEnabled = root.accountUsageEnabled; changed = true }
     if (projection.accountUsage !== accountValue) { projection.accountUsage = accountValue; changed = true }
     if (projection.accountUsageLoading !== accountLoading) { projection.accountUsageLoading = accountLoading; changed = true }
     if (projection.accountUsageError !== accountError) { projection.accountUsageError = accountError; changed = true }
@@ -844,9 +837,9 @@ Item {
 
   // Account usage is an operator intent, not a cadence fact: the slow quota
   // call runs when the operator arrives at Usage and when Refresh asks for
-  // all Panel facts — never because a timer ticked.
+  // all Panel facts — never because a timer ticked. A 5-hour and a weekly
+  // window do not move in 30 seconds (ADR-0002).
   function _shouldReadAccountUsage(demand) {
-    if (!root.accountUsageEnabled) return false
     if (demand.kind === "view-entry") return demand.view === "Usage"
     return demand.kind === "refresh"
   }
@@ -997,7 +990,6 @@ Item {
   // freshness. Triggered only by shouldReadAccountUsage — Usage entry and
   // explicit Refresh — never by a cadence tick.
   function _refreshAccountUsage(trailing) {
-    if (!root.accountUsageEnabled) return
     if (!root.online || !root.hasCallerSecret) return
     // One quota call at a time. An explicit Refresh owes every Panel fact, so
     // it is not discarded when it arrives beside an older call: it takes its

@@ -41,7 +41,6 @@ BarWidget {
     io: routerIo
     healthIntervalSec: root.healthIntervalSec
     dataIntervalSec: root.dataIntervalSec
-    accountUsageEnabled: root.accountUsageWanted
   }
 
   // Mutations are a sibling of the reader: the Panel and Models view
@@ -94,8 +93,6 @@ BarWidget {
   readonly property string stateDirSetting: expandPath(settings ? settings["stateDir"] : "")
 
   readonly property string sourceRootSetting: expandPath(settings ? settings["sourceRoot"] : "")
-
-  readonly property bool accountUsageWanted: setting("accountUsage", "Off") === "On"
 
   // ------------------------------------------------------------ palette
 

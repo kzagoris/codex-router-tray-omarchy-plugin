@@ -4,11 +4,12 @@ import qs.Ui
 import "../Model.js" as Model
 import "../ui"
 
-// USAGE view: what the router has spent. Limits (when the operator opted in
-// to the ChatGPT account call), tokens by day for the selected provider, the
-// by-provider roll-up, plus the funding and account facts the router already
-// sends in provider usage — balances answer "what will fund my next request"
-// and are value-only unless the metric carries a genuine used-percent.
+// USAGE view: what the router has spent, and what is left. The pills pick one
+// Provider and scope everything down to TOKENS BY DAY — LIMITS, FUNDING and
+// ACCOUNTS all belong to that Provider (ADR-0002). TOKENS BY PROVIDER stays
+// global: it is a roll-up by definition. Balances answer "what will fund my
+// next request" and are value-only unless the metric carries a genuine
+// used-percent.
 //
 // The panel hands over the active-View projection: this View's own Provider
 // facts, its loading state, and the account-usage sub-state with its own
@@ -46,44 +47,43 @@ Item {
   readonly property bool controlsReachable: !!usageRoot.projection
     && usageRoot.projection.blockingReason === ""
 
-  // Providers that have actually carried traffic — the usage switch would
-  // be unusable with all thirty-plus catalog entries on it.
+  // Everything the pills, the sections and the roll-up read comes out of one
+  // shape, assembled once per payload: the Model builders are pure and the
+  // view holds no copy of what they decide.
+  readonly property var sources: ({
+    account: usageRoot.projection ? usageRoot.projection.accountUsage : null,
+    accountLoading: !!usageRoot.projection && usageRoot.projection.accountUsageLoading,
+    providerUsage: usageRoot.projection ? usageRoot.projection.providerUsage : null,
+    providerSetup: usageRoot.projection ? usageRoot.projection.providerSetup : null
+  })
+
+  // Providers that earn a pill: traffic, or an allowance worth reading even
+  // before the first request (ADR-0002). The switch would be unusable with
+  // all thirty-plus catalog entries on it.
+  readonly property var pillProviders: Model.usageProviders(usageRoot.sources)
+
+  // The roll-up counts spend, so it stays on the providers that spent.
   readonly property var trafficProviders: {
     var out = []
-    var usage = usageRoot.projection ? usageRoot.projection.providerUsage : null
-    var list = usage && Array.isArray(usage.providers) ? usage.providers : []
-    for (var i = 0; i < list.length; i++) {
-      var p = list[i]
-      if (!p) continue
-      var total = Number(p.totalTokens) || 0
-      var requests = Number(p.requests) || 0
-      if (total <= 0 && requests <= 0) continue
-      out.push({
-        id: String(p.id || ""),
-        name: String(p.displayName || p.id || "unknown"),
-        total: total,
-        requests: requests,
-        last24h: Number(p.last24hTokens) || 0,
-        last24hRequests: Number(p.last24hRequests) || 0,
-        buckets: Array.isArray(p.dailyUsageBuckets) ? p.dailyUsageBuckets : []
-      })
+    for (var i = 0; i < usageRoot.pillProviders.length; i++) {
+      var p = usageRoot.pillProviders[i]
+      if (p.total > 0 || p.requests > 0) out.push(p)
     }
-    out.sort(function(a, b) { return b.total - a.total })
     return out
   }
 
   // Selection follows the provider id, not its slot: a fresh payload that
   // reshuffles the order must not swap what you were reading.
   property string selectedProviderId: ""
-  readonly property int trafficIndex: {
-    for (var i = 0; i < trafficProviders.length; i++)
-      if (trafficProviders[i].id === selectedProviderId) return i
+  readonly property int selectedIndex: {
+    for (var i = 0; i < pillProviders.length; i++)
+      if (pillProviders[i].id === selectedProviderId) return i
     return 0
   }
-  readonly property var selectedProvider: trafficProviders.length > 0
-    ? trafficProviders[trafficIndex] : null
+  readonly property var selectedProvider: pillProviders.length > 0
+    ? pillProviders[selectedIndex] : null
 
-  onTrafficIndexChanged: if (visible) usageRoot.scrollToTop()
+  onSelectedIndexChanged: if (visible) usageRoot.scrollToTop()
 
   // The local calendar day, as a string. daySeries and the Today row key
   // off this rather than raw nowMs: a per-second Date would rebuild the
@@ -91,7 +91,10 @@ Item {
   // width animations for nothing — the value only moves at midnight.
   readonly property string todayKey: Model.localDateKey(new Date(nowMs))
 
+  // A Provider that earned its pill on an allowance alone has no history to
+  // draw: seven empty bars would answer a question nobody asked.
   readonly property var daySeries: selectedProvider
+    && (selectedProvider.total > 0 || selectedProvider.requests > 0)
     ? Model.dailySeries(selectedProvider.buckets, 7, new Date(todayKey + "T12:00:00"))
     : []
 
@@ -114,43 +117,46 @@ Item {
     return text
   }
 
-  // Quota windows come from the slow account call plus whatever the usage
-  // payload carries locally; both sources dedupe inside buildQuotaCards. The
-  // section exists only when the operator opted in — the projection mirrors
-  // that flag beside the account sub-state it gates.
-  readonly property var quotaCards: usageRoot.projection
-    && usageRoot.projection.accountUsageEnabled
-    ? Model.buildQuotaCards({
-        account: usageRoot.projection.accountUsage,
-        providerUsage: usageRoot.projection.providerUsage,
-        providerSetup: usageRoot.projection.providerSetup
-      })
+  // The id the sections are scoped to. Not `selectedProviderId`, which stays
+  // empty until the operator picks a pill.
+  readonly property string selectedProviderKey: usageRoot.selectedProvider
+    ? usageRoot.selectedProvider.id : ""
+
+  // Limit windows come from the slow account read plus whatever the usage
+  // payload carries locally; both sources dedupe inside buildLimitWindows.
+  // Provider-sourced windows publish the moment provider_usage commits — the
+  // slow read never holds them up.
+  readonly property var limitWindows: usageRoot.projection
+    ? Model.forProvider(Model.buildLimitWindows(usageRoot.sources), usageRoot.selectedProviderKey)
     : []
 
-  // The quota call timed out and left nothing to show. Keyed on the sub-
-  // state's own error, so a retry clears it while the replacement attempt
-  // runs and core Provider facts never decide this line. No opt-in check
-  // here: the projection blanks the error whenever the operator has not
-  // opted in.
-  readonly property bool quotaUnavailable: !!usageRoot.projection
-    && !usageRoot.projection.accountUsage
-    && usageRoot.projection.accountUsageError !== ""
-
-  // Balances come straight out of provider_usage: no slow account call, so
-  // they are safe to show whenever a configured provider reports them.
   readonly property var balanceRows: usageRoot.projection
-    ? Model.buildBalanceRows({
-        providerUsage: usageRoot.projection.providerUsage,
-        providerSetup: usageRoot.projection.providerSetup
-      })
+    ? Model.forProvider(Model.buildBalanceRows(usageRoot.sources), usageRoot.selectedProviderKey)
     : []
 
   readonly property var accountNotes: usageRoot.projection
-    ? Model.buildAccountNotes({
-        providerUsage: usageRoot.projection.providerUsage,
-        providerSetup: usageRoot.projection.providerSetup
-      })
+    ? Model.forProvider(Model.buildAccountNotes(usageRoot.sources), usageRoot.selectedProviderKey)
     : []
+
+  // The account read is the only source of the ChatGPT windows, and it is the
+  // only slow one. Under its pill the slot says what it is doing instead of
+  // vanishing and reappearing.
+  readonly property bool accountSlot: Model.isAccountProvider(usageRoot.selectedProviderKey)
+
+  readonly property bool accountLoadingSlot: usageRoot.accountSlot
+    && !!usageRoot.projection && usageRoot.projection.accountUsageLoading
+    && usageRoot.limitWindows.length === 0
+
+  // A failed account read keeps whatever it had: an hour-old percentage
+  // beats nothing, and the line joins the cards rather than replacing them.
+  // It also stands alone when there was nothing to keep — a read that was
+  // attempted and failed is something to report, which is what separates
+  // this slot from the empty section a silent Provider gets.
+  // Keyed on the sub-state's own error, so a retry clears it while the
+  // replacement attempt runs and core Provider facts never decide this line.
+  readonly property bool accountErrorSlot: usageRoot.accountSlot
+    && !!usageRoot.projection && !usageRoot.projection.accountUsageLoading
+    && usageRoot.projection.accountUsageError !== ""
 
   height: column.implicitHeight
 
@@ -169,8 +175,6 @@ Item {
       textFormat: Text.PlainText
       visible: usageRoot.projection && usageRoot.projection.refreshing
         && !usageRoot.selectedProvider
-        && usageRoot.quotaCards.length === 0 && usageRoot.balanceRows.length === 0
-        && usageRoot.accountNotes.length === 0
       width: parent.width
       topPadding: Style.space(6)
       text: "Reading router state…"
@@ -183,8 +187,7 @@ Item {
     Text {
       textFormat: Text.PlainText
       visible: !!usageRoot.projection && !usageRoot.projection.refreshing
-        && usageRoot.trafficProviders.length === 0 && usageRoot.quotaCards.length === 0
-        && usageRoot.balanceRows.length === 0 && usageRoot.accountNotes.length === 0
+        && usageRoot.pillProviders.length === 0
       width: parent.width
       topPadding: Style.space(6)
       text: "Router online — no routed traffic yet.\nUsage shows up after the first request."
@@ -196,16 +199,17 @@ Item {
     }
 
     // ---------- Provider switch ----------
+    // One Provider is still worth a pill: it names whose limits these are.
     Row {
-      visible: usageRoot.trafficProviders.length > 1
+      visible: usageRoot.pillProviders.length > 0
       width: parent.width
       spacing: Style.spacing.sm
 
-      readonly property real cellWidth: (width - spacing * (usageRoot.trafficProviders.length - 1))
-        / Math.max(1, usageRoot.trafficProviders.length)
+      readonly property real cellWidth: (width - spacing * (usageRoot.pillProviders.length - 1))
+        / Math.max(1, usageRoot.pillProviders.length)
 
       Repeater {
-        model: usageRoot.trafficProviders
+        model: usageRoot.pillProviders
 
         Button {
           required property var modelData
@@ -213,7 +217,7 @@ Item {
 
           width: parent.cellWidth
           text: modelData.name
-          selected: index === usageRoot.trafficIndex
+          selected: index === usageRoot.selectedIndex
           bordered: true
           foreground: usageRoot.foreground
           fontFamily: usageRoot.fontFamily
@@ -224,9 +228,13 @@ Item {
       }
     }
 
-    // ---------- Quota (only when the user opted in) ----------
+    // ---------- Limits, for the selected provider ----------
+    // A provider with nothing to report has no section at all — no header,
+    // no placeholder. The ChatGPT slot is the one exception: it says it is
+    // reading rather than showing an empty frame that fills a second later.
     Column {
-      visible: usageRoot.quotaCards.length > 0 || usageRoot.quotaUnavailable
+      visible: usageRoot.limitWindows.length > 0 || usageRoot.accountLoadingSlot
+        || usageRoot.accountErrorSlot
       width: parent.width
       spacing: Style.space(10)
 
@@ -238,10 +246,10 @@ Item {
       }
 
       Repeater {
-        model: usageRoot.quotaCards
+        model: usageRoot.limitWindows
 
         Column {
-          id: quotaRow
+          id: limitRow
           required property var modelData
           width: parent.width
           spacing: Style.space(6)
@@ -251,27 +259,28 @@ Item {
 
           Item {
             width: parent.width
-            implicitHeight: quotaLabel.implicitHeight
+            implicitHeight: limitLabel.implicitHeight
 
             Text {
               textFormat: Text.PlainText
-              id: quotaLabel
-              text: quotaRow.modelData.label + " · " + quotaRow.modelData.providerName
+              id: limitLabel
+              // Bare title: the pill above already says whose window this is.
+              text: limitRow.modelData.label
               color: usageRoot.foreground
               font.family: usageRoot.fontFamily
               font.pixelSize: Style.font.body
               elide: Text.ElideRight
               anchors.left: parent.left
-              anchors.right: quotaValue.left
+              anchors.right: limitValue.left
               anchors.rightMargin: Style.spacing.sm
             }
 
             Text {
               textFormat: Text.PlainText
-              id: quotaValue
-              text: quotaRow.modelData.usedPercent !== null
-                ? Math.round(quotaRow.modelData.usedPercent) + "% used" : "—"
-              color: quotaRow.alarming ? usageRoot.urgent : usageRoot.foreground
+              id: limitValue
+              text: limitRow.modelData.usedPercent !== null
+                ? Math.round(limitRow.modelData.usedPercent) + "%" : "—"
+              color: limitRow.alarming ? usageRoot.urgent : usageRoot.foreground
               font.family: usageRoot.fontFamily
               font.pixelSize: Style.font.caption
               anchors.right: parent.right
@@ -280,8 +289,8 @@ Item {
 
           Meter {
             width: parent.width
-            value: quotaRow.modelData.usedPercent !== null ? quotaRow.modelData.usedPercent / 100 : -1
-            alarming: quotaRow.alarming
+            value: limitRow.modelData.usedPercent !== null ? limitRow.modelData.usedPercent / 100 : -1
+            alarming: limitRow.alarming
             foreground: usageRoot.foreground
             urgent: usageRoot.urgent
             track: usageRoot.track
@@ -294,10 +303,10 @@ Item {
             // §4 asks for a live countdown; keep the absolute time
             // as the fallback when no usable reset stamp arrived.
             text: {
-              if (!quotaRow.modelData.resetAt) return ""
+              if (!limitRow.modelData.resetAt) return ""
               var now = new Date(usageRoot.nowMs)
-              return Model.formatResetIn(quotaRow.modelData.resetAt, now)
-                || Model.formatReset(quotaRow.modelData.resetAt, now)
+              return Model.formatResetIn(limitRow.modelData.resetAt, now)
+                || Model.formatReset(limitRow.modelData.resetAt, now)
             }
             color: usageRoot.dim
             font.family: usageRoot.fontFamily
@@ -306,11 +315,24 @@ Item {
         }
       }
 
+      // The slow read holds its own slot: neither line names a cause it
+      // cannot know, and neither blanks the cards already on screen.
       Text {
         textFormat: Text.PlainText
-        visible: usageRoot.quotaUnavailable && usageRoot.quotaCards.length === 0
+        visible: usageRoot.accountLoadingSlot
         width: parent.width
-        text: "ChatGPT quota unavailable — the upstream call timed out."
+        text: "Reading ChatGPT limits…"
+        color: usageRoot.dim
+        font.family: usageRoot.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: usageRoot.accountErrorSlot
+        width: parent.width
+        text: "ChatGPT limits unavailable"
         color: usageRoot.dim
         font.family: usageRoot.fontFamily
         font.pixelSize: Style.font.caption
@@ -347,7 +369,8 @@ Item {
             Text {
               textFormat: Text.PlainText
               id: balanceLabel
-              text: balanceRow.modelData.providerName + " · " + balanceRow.modelData.label
+              // Bare, for the same reason a limit row is: the pill says who.
+              text: balanceRow.modelData.label
               color: usageRoot.foreground
               font.family: usageRoot.fontFamily
               font.pixelSize: Style.font.body
@@ -433,10 +456,12 @@ Item {
           width: parent.width
           spacing: Style.space(2)
 
+          // The plan alone: this section belongs to the selected Provider,
+          // so a row that only repeated its name would say nothing.
           Text {
             textFormat: Text.PlainText
-            text: noteRow.modelData.providerName
-              + (noteRow.modelData.plan !== "" ? " · " + noteRow.modelData.plan : "")
+            visible: noteRow.modelData.plan !== ""
+            text: noteRow.modelData.plan
             color: usageRoot.foreground
             font.family: usageRoot.fontFamily
             font.pixelSize: Style.font.body
@@ -449,9 +474,9 @@ Item {
             visible: noteRow.modelData.message !== ""
             width: parent.width
             text: noteRow.modelData.message
-            // A router "not permitted to call the API" line is a
-            // caution, not a fact to decorate with styling.
-            color: usageRoot.urgent
+            // Router prose is a statement of fact until the provider has no
+            // usable allowance left to report — only then is it a caution.
+            color: noteRow.modelData.urgent ? usageRoot.urgent : usageRoot.dim
             font.family: usageRoot.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap

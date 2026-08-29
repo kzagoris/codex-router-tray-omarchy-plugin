@@ -8,6 +8,38 @@ verified against the codex-router version noted in each entry.
 
 ## [Unreleased]
 
+Limits are shown by default and scoped to the selected Provider
+(`scratch/011`, `ADR-0002`). No payload shape change; one manifest setting
+removed.
+
+- **The `accountUsage` opt-in is deleted, not flipped.** It gated the whole
+  LIMITS section, including the limit windows that ride in `provider_usage`
+  and cost nothing extra, so a stock install showed no limits at all while
+  the Router reported an exhausted monthly window. Measured on loopback,
+  `account_usage` answers in 1.8s — not the 30s its timeout budget implied.
+  Both reads now run on Usage entry and explicit Refresh, never on a cadence.
+  A stale `accountUsage` key left in `shell.json` is ignored.
+- **Limits, funding and notes are scoped to the selected Provider.** The
+  Usage pills already chose one Provider for TOKENS BY DAY; they now scope
+  everything above it, in the order LIMITS, FUNDING, ACCOUNTS. This fixes a
+  live defect where ChatGPT was selected and another Provider's note rendered
+  beneath it. TOKENS BY PROVIDER stays global.
+- **A Provider earns a pill by reporting an allowance,** not only by having
+  carried traffic — otherwise a configured, unused Provider's limits would be
+  unreachable. The pill row now appears with a single Provider.
+- **Limit rows read like the official `agents` plugin:** a bare title
+  (`Session` / `Weekly` / `Monthly`, else the Router's own sanitized label),
+  a bare right-aligned percent that turns urgent at 90%, a meter, and a dim
+  `Resets in 1d 7h`. The account-sourced Provider name standardises on
+  `ChatGPT`.
+- **The slow read never holds up the fast ones.** Provider-sourced limits
+  render as soon as `provider_usage` commits; under the ChatGPT pill a dim
+  `Reading ChatGPT limits…` holds the slot, and a failed read degrades to a
+  dim `ChatGPT limits unavailable` while keeping the numbers it already had.
+- **Router prose is dim by default.** A note turns urgent only where its
+  Provider reports no usable limit and no usable balance, and a `local-only`
+  note is dropped once that Provider's limits are on screen.
+
 ## [0.4.0] — 2026-08-29
 
 The Router reader workflow deepened (`scratch/009`). No manifest schema

@@ -171,22 +171,58 @@ function dailySeries(buckets, days, today) {
   return series;
 }
 
-// ChatGPT quota metrics arrive with prose labels ("5-hour window", "Weekly
-// limit") or canonical durations; normalize both to one of three windows.
-// Anything else keeps the router's own label as a generic window instead of
-// being dropped: opencode's rolling window carries no duration, and a future
-// window must not need a new pattern to reach a card.
-function quotaWindow(metric) {
+// The account provider: the one Provider whose Limit windows arrive from the
+// slow Account usage read rather than from Provider usage. Both sources name
+// it differently ("ChatGPT" and "ChatGPT (native)"); one canonical name keeps
+// its pill, its cards and its note reading as one Provider.
+var ACCOUNT_PROVIDER_ID = "openai";
+var CANONICAL_PROVIDER_NAMES = { openai: "ChatGPT" };
+
+// A Provider id as a string, absent or null included: every row this module
+// builds is keyed and matched by one.
+function idText(value) {
+  return String(value === undefined || value === null ? "" : value);
+}
+
+function isAccountProvider(id) {
+  return idText(id) === ACCOUNT_PROVIDER_ID;
+}
+
+function providerDisplayName(id, raw) {
+  var key = idText(id);
+  if (Object.prototype.hasOwnProperty.call(CANONICAL_PROVIDER_NAMES, key))
+    return CANONICAL_PROVIDER_NAMES[key];
+  return plainText(raw || key || "unknown", 64);
+}
+
+// Every row this module builds carries the Provider it belongs to, and the
+// Usage view shows one Provider at a time (ADR-0002).
+function forProvider(rows, providerId) {
+  var list = Array.isArray(rows) ? rows : [];
+  var id = idText(providerId);
+  var out = [];
+  for (var i = 0; i < list.length; i++)
+    if (list[i] && idText(list[i].providerId) === id) out.push(list[i]);
+  return out;
+}
+
+// Limit-window metrics arrive with prose labels ("5-hour window", "Weekly limit") or
+// canonical durations; normalize both to one of three windows. Titles are
+// bare — the pill above already says whose window this is. Anything else
+// keeps the router's own label as a generic window instead of being dropped:
+// opencode's rolling window carries no duration, and a future window must not
+// need a new pattern to reach a card.
+function limitWindow(metric) {
   if (!metric || (metric.kind && metric.kind !== "quota")) return null;
   var label = String(metric.label || "").toLowerCase().replace(/[–—]/g, "-");
   var minutes = Number(metric.windowDurationMins);
   if (label.indexOf("5-hour") >= 0 || label.indexOf("5 hour") >= 0
       || label.indexOf("five-hour") >= 0 || minutes === 300)
-    return { key: "five-hour", label: "5-hour limit" };
+    return { key: "five-hour", label: "Session" };
   if (label.indexOf("week") >= 0 || minutes === 10080)
-    return { key: "weekly", label: "Weekly limit" };
+    return { key: "weekly", label: "Weekly" };
   if (label.indexOf("month") >= 0 || minutes === 43200)
-    return { key: "monthly", label: "Monthly limit" };
+    return { key: "monthly", label: "Monthly" };
   var sanitized = plainText(metric.label || "", 64);
   var genericLabel = sanitized === "" ? "Usage" : sanitized;
   return {
@@ -241,9 +277,9 @@ function buildBalanceRows(sources) {
   for (var s = 0; s < setupProviders.length; s++)
     if (setupProviders[s] && setupProviders[s].configured) configured[setupProviders[s].id] = true;
 
-  var usageProviders = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
-  for (var u = 0; u < usageProviders.length; u++) {
-    var provider = usageProviders[u];
+  var entries = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  for (var u = 0; u < entries.length; u++) {
+    var provider = entries[u];
     if (!provider || !configured[provider.id]) continue;
     var metrics = provider.account && Array.isArray(provider.account.metrics) ? provider.account.metrics : [];
     for (var m = 0; m < metrics.length; m++) {
@@ -259,7 +295,7 @@ function buildBalanceRows(sources) {
       var row = {
         key: key,
         providerId: provider.id,
-        providerName: plainText(provider.displayName || provider.id, 64),
+        providerName: providerDisplayName(provider.id, provider.displayName),
         source: "provider",
         label: plainText(String(metric.label || "Balance"), 64),
         value: value,
@@ -276,31 +312,56 @@ function buildBalanceRows(sources) {
   return rows;
 }
 
+// Providers whose Limit windows or Balances are usable enough to answer
+// "what stops my next prompt": a card with no percent and a Balance the
+// router flags unavailable both count for nothing.
+function usableAllowanceByProvider(sources) {
+  var out = { limits: {}, funding: {} };
+  var cards = buildLimitWindows(sources);
+  for (var c = 0; c < cards.length; c++)
+    if (cards[c].usedPercent !== null) out.limits[cards[c].providerId] = true;
+  var rows = buildBalanceRows(sources);
+  for (var r = 0; r < rows.length; r++)
+    if (rows[r].available !== false) out.funding[rows[r].providerId] = true;
+  return out;
+}
+
 // Account plan and operator-facing note, surfaced only when this provider's
 // payload actually supplies them. The message is router prose, treated as
 // plain text: control characters flattened, markup stripped, length clamped.
+//
+// Notes are informational by default (`urgent: false`). A note earns urgency
+// only where the provider reports no usable Limit window and no usable
+// Balance — the operator has nothing else telling them this provider will
+// not serve. A `local-only` note is dropped outright once its provider's
+// limits are on screen: it says the router only sees its own traffic, which
+// the numbers above it now say better.
 function buildAccountNotes(sources) {
   var providerUsage = sources && sources.providerUsage;
   var providerSetup = sources && sources.providerSetup;
+  var allowance = usableAllowanceByProvider(sources);
   var notes = [];
   var configured = {};
   var setupProviders = providerSetup && Array.isArray(providerSetup.providers) ? providerSetup.providers : [];
   for (var s = 0; s < setupProviders.length; s++)
     if (setupProviders[s] && setupProviders[s].configured) configured[setupProviders[s].id] = true;
 
-  var usageProviders = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
-  for (var u = 0; u < usageProviders.length; u++) {
-    var provider = usageProviders[u];
+  var entries = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  for (var u = 0; u < entries.length; u++) {
+    var provider = entries[u];
     if (!provider || !configured[provider.id] || !provider.account) continue;
     var plan = plainText(String(provider.account.plan || ""), 64);
     var message = plainText(String(provider.account.message || ""), 320);
     if (plan === "" && message === "") continue;
+    var hasLimits = allowance.limits[provider.id] === true;
+    if (String(provider.account.status || "") === "local-only" && hasLimits) continue;
     notes.push({
       key: provider.id,
       providerId: provider.id,
-      providerName: plainText(provider.displayName || provider.id, 64),
+      providerName: providerDisplayName(provider.id, provider.displayName),
       plan: plan,
-      message: message
+      message: message,
+      urgent: !hasLimits && allowance.funding[provider.id] !== true
     });
   }
   return notes;
@@ -315,10 +376,10 @@ function formatAmount(value, currency) {
   return String(currency || "").toLowerCase() === "usd" ? number.toFixed(2) : text;
 }
 
-// Quota cards from every source that has them: the account_usage call when it
-// answered, plus any provider_usage entry carrying account metrics. Deduped
-// per provider+window so the same window never paints twice.
-function buildQuotaCards(sources) {
+// Limit windows from every source that has them: the account_usage call when
+// it answered, plus any provider_usage entry carrying account metrics.
+// Deduped per provider+window so the same window never paints twice.
+function buildLimitWindows(sources) {
   var account = sources && sources.account;
   var providerUsage = sources && sources.providerUsage;
   var providerSetup = sources && sources.providerSetup;
@@ -326,7 +387,7 @@ function buildQuotaCards(sources) {
   var seen = {};
 
   function add(providerId, providerName, metric, source) {
-    var win = quotaWindow(metric);
+    var win = limitWindow(metric);
     if (!win) return;
     var key = providerId + ":" + win.key;
     if (seen[key]) return;
@@ -345,8 +406,10 @@ function buildQuotaCards(sources) {
     });
   }
 
-  if (account && account.primary) add("openai", "ChatGPT", account.primary, "account");
-  if (account && account.secondary) add("openai", "ChatGPT", account.secondary, "account");
+  if (account && account.primary)
+    add(ACCOUNT_PROVIDER_ID, providerDisplayName(ACCOUNT_PROVIDER_ID, ""), account.primary, "account");
+  if (account && account.secondary)
+    add(ACCOUNT_PROVIDER_ID, providerDisplayName(ACCOUNT_PROVIDER_ID, ""), account.secondary, "account");
 
   // Only providers the snapshot confirms as configured may contribute their
   // own quota rows — unconfigured entries carry stale cached numbers.
@@ -355,15 +418,66 @@ function buildQuotaCards(sources) {
   for (var s = 0; s < setupProviders.length; s++)
     if (setupProviders[s] && setupProviders[s].configured) configured[setupProviders[s].id] = true;
 
-  var usageProviders = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
-  for (var u = 0; u < usageProviders.length; u++) {
-    var provider = usageProviders[u];
+  var entries = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  for (var u = 0; u < entries.length; u++) {
+    var provider = entries[u];
     if (!provider || !configured[provider.id]) continue;
     var metrics = provider.account && Array.isArray(provider.account.metrics) ? provider.account.metrics : [];
     for (var m = 0; m < metrics.length; m++)
-      add(provider.id, provider.displayName || provider.id, metrics[m], "provider");
+      add(provider.id, providerDisplayName(provider.id, provider.displayName), metrics[m], "provider");
   }
   return cards;
+}
+
+// The Providers that earn a Usage pill. Carrying traffic is one way in; so is
+// reporting a Limit window or a Balance, because an allowance nobody has spent
+// yet is exactly the thing an operator opens this view to find (ADR-0002).
+// The account provider earns its pill from the Account usage read alone —
+// while that read is in flight it holds the slot for the answer.
+function usageProviders(sources) {
+  var providerUsage = sources && sources.providerUsage;
+  var accountLoading = !!(sources && sources.accountLoading);
+  var reports = {};
+  var cards = buildLimitWindows(sources);
+  for (var c = 0; c < cards.length; c++) reports[cards[c].providerId] = true;
+  var rows = buildBalanceRows(sources);
+  for (var r = 0; r < rows.length; r++) reports[rows[r].providerId] = true;
+
+  var list = providerUsage && Array.isArray(providerUsage.providers) ? providerUsage.providers : [];
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < list.length; i++) {
+    var provider = list[i];
+    if (!provider) continue;
+    var total = Number(provider.totalTokens) || 0;
+    var requests = Number(provider.requests) || 0;
+    if (total <= 0 && requests <= 0 && reports[provider.id] !== true) continue;
+    seen[provider.id] = true;
+    out.push({
+      id: String(provider.id || ""),
+      name: providerDisplayName(provider.id, provider.displayName),
+      total: total,
+      requests: requests,
+      last24h: Number(provider.last24hTokens) || 0,
+      last24hRequests: Number(provider.last24hRequests) || 0,
+      buckets: Array.isArray(provider.dailyUsageBuckets) ? provider.dailyUsageBuckets : []
+    });
+  }
+
+  if ((accountLoading || reports[ACCOUNT_PROVIDER_ID] === true)
+      && seen[ACCOUNT_PROVIDER_ID] !== true)
+    out.push({
+      id: ACCOUNT_PROVIDER_ID,
+      name: providerDisplayName(ACCOUNT_PROVIDER_ID, ""),
+      total: 0,
+      requests: 0,
+      last24h: 0,
+      last24hRequests: 0,
+      buckets: []
+    });
+
+  out.sort(function(a, b) { return b.total - a.total; });
+  return out;
 }
 
 // "Resets today at 6:30 PM" style countdown anchor.

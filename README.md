@@ -62,10 +62,14 @@ web panel.
 
 ### Usage
 
-The Usage view shows the tokens of one provider. A switcher selects the
-provider. The bars show the tokens for each of the last 7 days. The rows
-below show the part of the total that each provider used. If you turn on the
-ChatGPT quota cards, they show here.
+The Usage view shows the limits and the tokens of one provider. A switcher
+selects the provider. A provider gets a position in the switcher when it
+reports a limit, a balance, or traffic.
+
+The view shows the limits, the funding, and the account notes of the selected
+provider. Each limit shows the used part in percent and the time to the reset.
+The bars below show the tokens for each of the last 7 days. The last rows show
+the part of the total that each provider used.
 
 <p align="center">
   <img src="docs/screenshots/usage.png" alt="The Usage view with tokens for each day and for each provider" width="380">
@@ -169,7 +173,6 @@ layout entry of the widget:
 | `port` | `4202` | The port of the router. If it is empty, the widget uses `MODEL_ROUTER_PORT`, then `4202` |
 | `stateDir` | `""` | The directory that holds `caller-secret`. If it is empty, the widget uses `~/.codex/codex-router` |
 | `sourceRoot` | `""` | The checkout of the router for the control CLI. If it is empty, the widget uses `~/.local/share/codex-router` |
-| `accountUsage` | `"Off"` | The ChatGPT quota cards. The upstream call is slow, thus the default is `"Off"` |
 
 ## Commands
 
@@ -219,6 +222,17 @@ the plugin.
 ## Changelog
 
 Full history in [`CHANGELOG.md`](CHANGELOG.md).
+
+### Unreleased
+
+- **The limits show without a setting.** The `accountUsage` setting is
+  removed. The Usage view reads the ChatGPT limits when you open it and when
+  you refresh. A key that stays in `shell.json` does no harm; the widget
+  ignores it (`scratch/011`).
+
+- **The limits, the funding, and the notes belong to one provider.** The
+  switcher scopes them, in this sequence: LIMITS, FUNDING, ACCOUNTS. The
+  tokens for each provider stay a sum of all the providers (`scratch/011`).
 
 ### 0.3.0 — 2026-08-28
 
