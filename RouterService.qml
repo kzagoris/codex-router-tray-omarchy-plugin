@@ -323,8 +323,15 @@ Item {
     return text.length > limit ? text.slice(0, limit - 1) + "…" : text
   }
 
+  // The four mutually exclusive Panel Views. One list here, so "every View"
+  // in the policies below means the switcher set; Panel.qml carries its own
+  // switcher labels and must stay in step with this list.
+  function supportedViews() {
+    return ["Status", "Usage", "Providers", "Models"]
+  }
+
   function isSupportedView(view) {
-    return ["Status", "Usage", "Providers", "Models"].indexOf(String(view)) !== -1
+    return root.supportedViews().indexOf(String(view)) !== -1
   }
 
   // Status, Providers and Models read their facts from the shared Snapshot;
@@ -460,6 +467,98 @@ Item {
     root.updateActiveViewProjection()
   }
 
+  // The logical reads a demand opens. An ordinary demand answers its own
+  // View alone. Explicit Refresh means every Panel fact, so it opens one
+  // read per View and each View commits — facts, freshness, errors — as its
+  // own required facts settle, independently of the others and of whether it
+  // is visible. That is what makes a Refresh while the Panel is closed show
+  // the requested state when the Panel opens. A View the recipe cannot
+  // answer is excluded rather than left open forever.
+  function openViewReads(demand, commands, readsSnapshot) {
+    var views
+    if (demand.kind === "refresh") {
+      views = root.supportedViews().filter(function(view) {
+        var required = root.requiredCommandsForView(view)
+        for (var index = 0; index < required.length; index++)
+          if (required[index] !== "control_snapshot" && commands.indexOf(required[index]) === -1)
+            return false
+        return true
+      })
+    } else {
+      views = [demand.view]
+    }
+
+    var states = []
+    for (var viewIndex = 0; viewIndex < views.length; viewIndex++) {
+      var required = root.requiredCommandsForView(views[viewIndex])
+      var state = {
+        viewRead: root.beginViewRead(views[viewIndex]),
+        required: required,
+        staged: { snapshot: null, providerSetup: null, providerUsage: null },
+        requiredError: "",
+        requiredPending: 0,
+        allRequiredFresh: true,
+        freshAtCeiling: 0,
+        open: true
+      }
+      for (var factIndex = 0; factIndex < required.length; factIndex++) {
+        var fact = required[factIndex]
+        if (fact === "control_snapshot" && !readsSnapshot) {
+          // A valid cache is this View's Snapshot answer for demand that asked
+          // for the View's facts. An ordinary cadence is not such demand: it
+          // read nothing here, so it leaves the read incomplete rather than
+          // restamping unchanged facts as newly fresh.
+          if (root._snapshotCacheValid && demand.kind !== "cadence") {
+            state.staged.snapshot = root.snapshot
+            state.freshAtCeiling = root._snapshotFreshAt
+          } else state.allRequiredFresh = false
+        } else if (fact !== "control_snapshot" && commands.indexOf(fact) === -1) {
+          // A View fact this demand does not buy. Provider setup does not poll,
+          // so a Usage cadence round is complete only while the setup its View
+          // renders is still committed: the record's retained fact answers,
+          // and without one the read stays incomplete — silently, exactly like
+          // a cadence that bought nothing at all.
+          var retainedProp = root.factPropertyFor(fact)
+          var retained = state.viewRead.record[retainedProp]
+          if (retained !== null && retained !== undefined)
+            state.staged[retainedProp] = retained
+          else state.allRequiredFresh = false
+        } else {
+          state.requiredPending++
+        }
+      }
+      // A demand answered entirely from cache or retention completes without
+      // any read.
+      if (state.requiredPending === 0) closeViewReadState(state, state.allRequiredFresh)
+      states.push(state)
+    }
+    return states
+  }
+
+  // Settle one physical command result against one View's logical read. A
+  // View's own round is complete as soon as its required facts have all
+  // settled; the broad physical recipe may still be serving the other Views.
+  function settleViewReadState(state, round, value, error, accepted) {
+    if (!state.open) return
+    if (state.required.indexOf(round.command) === -1) return
+    if (error !== null) {
+      if (state.requiredError === "") state.requiredError = error
+    } else if (accepted) {
+      state.staged[round.prop] = value
+    } else {
+      state.allRequiredFresh = false
+    }
+    state.requiredPending--
+    if (state.requiredPending === 0) closeViewReadState(state, state.allRequiredFresh)
+  }
+
+  // Close one View's logical read and publish whatever its round decided.
+  function closeViewReadState(state, allRequiredFresh) {
+    state.open = false
+    root.finishViewRead(state.viewRead, state.required, state.staged, state.requiredError,
+      allRequiredFresh, state.freshAtCeiling)
+  }
+
   function demandPriority(kind) {
     if (kind === "refresh") return 3
     if (kind === "checking-proof") return 2
@@ -554,9 +653,8 @@ Item {
     root.stageDemand("view-entry", view)
   }
 
-  // Public semantic intents. The broad effect recipe remains intentionally
-  // legacy-shaped until ticket 15 defines Refresh completeness and ticket 16
-  // maps real mutation outcomes to reconciliation recipes.
+  // Public semantic intents. Reconciliation still carries the broad recipe
+  // until ticket 16 maps real mutation outcomes to reconciliation recipes.
   function requestRefresh() {
     // A caller key written after the shell started is invisible until somebody
     // asks for it again, and Refresh is the operator waiting on that answer.
@@ -688,8 +786,8 @@ Item {
 
   // Expand-step compatibility for legacy callers and tests. Production Panel,
   // cadence and mutation paths declare narrower semantic intents above.
-  // This alias means explicit operator Refresh; ticket 15 defines its complete
-  // all-facts recipe.
+  // This alias means explicit operator Refresh: all Panel facts, while the
+  // Panel is open or closed (see dispatchDataRecipe).
   function refreshData() {
     root.requestRefresh()
   }
@@ -703,8 +801,10 @@ Item {
 
   // Which facts a demand is willing to pay for. Entering a View reads exactly
   // what that View renders — entering Status must not buy Provider facts it
-  // never shows. Every other demand keeps the broad recipe until the ticket
-  // that owns it says otherwise: 15 for Refresh, 16 for reconciliation.
+  // never shows. Refresh keeps the broad recipe because it means every Panel
+  // fact; its all-View commits are decided in dispatchDataRecipe.
+  // Reconciliation keeps the broad recipe until ticket 16 narrows it to the
+  // mutation's semantic outcome.
   function commandsForDemand(demand) {
     if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
     // The data cadence exists for visible Usage alone: Provider usage is the
@@ -768,46 +868,7 @@ Item {
     var gotFresh = false
     var firstSharedError = ""
     var roundOpen = true
-    var required = root.requiredCommandsForView(demand.view)
-    var viewRead = root.beginViewRead(demand.view)
-    var staged = { snapshot: null, providerSetup: null, providerUsage: null }
-    var requiredError = ""
-    var requiredPending = 0
-    var allRequiredFresh = true
-    var viewReadOpen = true
-    var freshAtCeiling = 0
-
-    for (var factIndex = 0; factIndex < required.length; factIndex++) {
-      var fact = required[factIndex]
-      if (fact === "control_snapshot" && !readsSnapshot) {
-        // A valid cache is this View's Snapshot answer for demand that asked
-        // for the View's facts. An ordinary cadence is not such demand: it
-        // read nothing here, so it leaves the read incomplete rather than
-        // restamping unchanged facts as newly fresh.
-        if (root._snapshotCacheValid && demand.kind !== "cadence") {
-          staged.snapshot = root.snapshot
-          freshAtCeiling = root._snapshotFreshAt
-        } else allRequiredFresh = false
-      } else if (fact !== "control_snapshot" && commands.indexOf(fact) === -1) {
-        // A View fact this demand does not buy. Provider setup does not poll,
-        // so a Usage cadence round is complete only while the setup its View
-        // renders is still committed: the record's retained fact answers,
-        // and without one the read stays incomplete — silently, exactly like
-        // a cadence that bought nothing at all.
-        var retainedProp = root.factPropertyFor(fact)
-        if (viewRead.record[retainedProp] !== null && viewRead.record[retainedProp] !== undefined)
-          staged[retainedProp] = viewRead.record[retainedProp]
-        else allRequiredFresh = false
-      } else {
-        requiredPending++
-      }
-    }
-    // Entry demand answered entirely from cache completes without any read.
-    if (requiredPending === 0) {
-      viewReadOpen = false
-      root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh,
-        freshAtCeiling)
-    }
+    var viewReadStates = root.openViewReads(demand, commands, readsSnapshot)
 
     function receive(round, generation, value, error, epoch) {
       var accepted = false
@@ -832,23 +893,8 @@ Item {
       } else if (firstSharedError === "") {
         firstSharedError = error
       }
-      if (required.indexOf(round.command) !== -1) {
-        if (error !== null) {
-          if (requiredError === "") requiredError = error
-        } else if (accepted) {
-          staged[round.prop] = value
-        } else {
-          allRequiredFresh = false
-        }
-        requiredPending--
-        // A View's logical round is complete as soon as its own facts settle;
-        // the broad physical recipe may still be serving unrelated caches.
-        if (requiredPending === 0 && viewReadOpen) {
-          viewReadOpen = false
-          root.finishViewRead(viewRead, required, staged, requiredError, allRequiredFresh,
-            freshAtCeiling)
-        }
-      }
+      for (var stateIndex = 0; stateIndex < viewReadStates.length; stateIndex++)
+        root.settleViewReadState(viewReadStates[stateIndex], round, value, error, accepted)
 
       // A retry parked by a mid-round rotation can land after the round
       // closed: its fresh payload still lands above, but it must not touch
@@ -861,10 +907,6 @@ Item {
       root.dataLoading = root._activeRecipeCount > 0
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = root.clock.now()
-      // Hidden records are intentionally not completed by this broad recipe:
-      // ticket 15 defines the all-View explicit Refresh policy. The helper
-      // above already accepts an arbitrary record/required-fact set so that
-      // policy can fan out without replacing this projection machinery.
       root.consumePendingDemand()
     }
 
@@ -878,13 +920,12 @@ Item {
       // Nothing was dispatched, so no completion callback will drain the
       // queue: whatever else is waiting gets its chance here instead.
       // A cadence that reads nothing (Providers has no authenticated cadence)
-      // still opened a logical view read above. Close it without claiming
-      // freshness or inventing an error, so `refreshing` does not stick.
-      if (viewReadOpen) {
-        viewReadOpen = false
-        root.finishViewRead(viewRead, required, staged, requiredError, false,
-          freshAtCeiling)
-      }
+      // still opened logical view reads above. Close any that somehow stayed
+      // open without claiming freshness or inventing an error, so
+      // `refreshing` does not stick.
+      for (var openIndex = 0; openIndex < viewReadStates.length; openIndex++)
+        if (viewReadStates[openIndex].open)
+          closeViewReadState(viewReadStates[openIndex], false)
       root.consumePendingDemand()
       return
     }
