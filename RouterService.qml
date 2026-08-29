@@ -146,6 +146,7 @@ Item {
   readonly property string lifecycleRecoveryOrigin: root._lifecycleRecoveryOrigin
   property string _pendingLifecycleOrigin: ""
   property int _pendingLifecycleHealthBarrier: 0
+  signal reconciliationSettled(string view, bool success)
 
   onReaderPresentChanged: {
     if (!root.readerPresent) {
@@ -912,6 +913,8 @@ Item {
       root.dataLoading = root._activeRecipeCount > 0
       root.dataError = firstSharedError
       if (gotFresh) root.lastUpdatedAt = root.clock.now()
+      if (demand.kind === "reconciliation")
+        root.reconciliationSettled(demand.view, firstSharedError === "")
       root.consumePendingDemand()
     }
 
@@ -931,6 +934,8 @@ Item {
       for (var openIndex = 0; openIndex < viewReadStates.length; openIndex++)
         if (viewReadStates[openIndex].open)
           closeViewReadState(viewReadStates[openIndex], false)
+      if (demand.kind === "reconciliation")
+        root.reconciliationSettled(demand.view, true)
       root.consumePendingDemand()
       return
     }

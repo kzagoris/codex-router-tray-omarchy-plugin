@@ -26,11 +26,6 @@ Item {
   property string mutationLabel: ""
   property string mutationError: ""
 
-  // A catalog-model queue uses this to suppress per-command reconciliation
-  // until it drains. BarWidget owns the resulting read policy, keeping this
-  // transport independent of RouterService.
-  property bool deferAutoRefresh: false
-
   // Emitted after onDone(null) for every successful run, with the exact
   // args that ran. Service commands bounce the daemon, so the consumer
   // delays their re-read.

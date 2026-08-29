@@ -107,13 +107,13 @@ Item {
     // lands, and re-entering asks for no new read because the snapshot it
     // finds is not null.
     if (!modelsRoot.active && !modelsRoot.busy
-        && modelsRoot._queue.length === 0 && !modelsRoot._reconciling)
+        && modelsRoot._queue.length === 0 && !modelsRoot._awaitingReconciliation)
       modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
   onControlsReachableChanged: {
     // Nothing is coming to confirm a pending toggle while the router is
     // away, so stop showing it as if something were.
-    if (!modelsRoot.controlsReachable) modelsRoot._giveUpReconciling()
+    if (!modelsRoot.controlsReachable) modelsRoot._clearPendingReconciliation()
   }
   onViewModelChanged: modelsRoot._syncCheckingProofVisibility()
   // A running mutation is about to re-read the snapshot when its queue
@@ -147,12 +147,10 @@ Item {
   readonly property string notice: modelsRoot.busy
     ? modelsRoot.runningLabel + "…" : modelsRoot.errorNotice
 
-  // The service's read-round counter as it stood when the queue last
-  // drained. Only a round that *began* after that can answer for everything
-  // that ran; a round that merely finishes later may have started before the
-  // change landed.
-  property int _settledRound: 0
-  property bool _reconciling: false
+  // True while the coalesced queue has finished and a reconciling Snapshot
+  // for Models is pending or in flight. Queued toggles stay visible until
+  // that Snapshot (success or failure) settles.
+  property bool _awaitingReconciliation: false
 
   // Switching the setting moves the operator away from the row that failed,
   // so its message goes with them.
@@ -216,9 +214,6 @@ Item {
     modelsRoot._queue = next
     modelsRoot.busy = true
     modelsRoot.runningLabel = intent.label
-    // Composition's ordinary "mutate, then re-read" would fire once per command;
-    // this view reconciles once, when the whole queue has drained.
-    modelsRoot.controlProcess.deferAutoRefresh = true
 
     modelsRoot.controlProcess.runControl(intent.label, intent.args, function(error) {
       modelsRoot.busy = false
@@ -239,89 +234,58 @@ Item {
     })
   }
 
-  // The queue is empty: ask for the one read that reconciles everything that
-  // ran. The deferral stays on across this call deliberately — the control
-  // process emits its jobSucceeded *after* the callback that got us here,
-  // and its own re-read would be the second one. Releasing it through
-  // Qt.callLater lets that signal be swallowed and hands the policy back
-  // before anything else can mutate.
+  // The queue is empty: report one semantic outcome after it drains,
+  // naming Models as the originating View. RouterService performs exactly
+  // one reconciling Snapshot read, however many commands ran.
   function _settle() {
     if (!modelsRoot.service) {
-      modelsRoot._giveUpReconciling()
-      Qt.callLater(modelsRoot._releaseDeferral)
+      modelsRoot._clearPendingReconciliation()
       return
     }
     if (!modelsRoot.controlsReachable) {
       // No reconciliation can dispatch, so show what is known rather than a
       // setting nothing can confirm.
-      modelsRoot._giveUpReconciling()
-      Qt.callLater(modelsRoot._releaseDeferral)
+      modelsRoot._clearPendingReconciliation()
       return
     }
-    modelsRoot._settledRound = modelsRoot.service.dataRound
-    modelsRoot._reconciling = true
-    modelsRoot.service.requestReconciliation("Models")
-    Qt.callLater(modelsRoot._releaseDeferral)
+    modelsRoot._awaitingReconciliation = true
+    modelsRoot.service.reportMutationOutcome("Models", "none")
   }
 
   // A pending toggle that nothing will confirm goes back to what the last
   // successful read said. Never on screen: a setting that did not take.
-  //
-  // Unconditional on purpose. Guarding on `_reconciling` would skip exactly
-  // the case that needs this most — the router going away before the drain,
-  // so a toggle was applied optimistically while no read was ever expected.
-  function _giveUpReconciling() {
-    modelsRoot._reconciling = false
+  function _clearPendingReconciliation() {
+    modelsRoot._awaitingReconciliation = false
     modelsRoot.overrides = { picker: ({}), subagents: ({}) }
   }
 
-  function _releaseDeferral() {
-    if (modelsRoot.controlProcess) modelsRoot.controlProcess.deferAutoRefresh = false
+  function _giveUpReconciling() {
+    modelsRoot._clearPendingReconciliation()
   }
 
   // Nothing can be applied: drop the queue, drop every optimistic toggle so
-  // the panel stops showing settings that did not take, and never leave the
-  // service's refresh policy switched off behind us.
+  // the panel stops showing settings that did not take.
   function _abort(message) {
     modelsRoot._queue = []
     modelsRoot.overrides = { picker: ({}), subagents: ({}) }
-    modelsRoot._reconciling = false
+    modelsRoot._awaitingReconciliation = false
     modelsRoot.errorNotice = message
     modelsRoot._errorKey = ""
-    Qt.callLater(modelsRoot._releaseDeferral)
   }
 
   Connections {
     target: modelsRoot.service
     enabled: !!modelsRoot.service
 
-    // A fresh snapshot has landed. It reconciles this view only if its round
-    // began after the last command finished and nothing is pending — a round
-    // already in flight carries pre-mutation data, and clearing the
-    // optimistic toggles against it would show the operator the old state.
-    //
-    // Bound to the snapshot rather than to the round closing: a round can
-    // close having refreshed usage while the catalog read itself failed, and
-    // that answers for nothing here.
-    function onSnapshotChanged() {
-      if (!modelsRoot._reconciling) return
+    // The coalesced queue reports one semantic outcome; the reader's
+    // reconciling Snapshot read settles it. Success and failure both retire
+    // the optimistic toggles — a failed Snapshot cannot confirm the change,
+    // so the view falls back to Router truth rather than parking the toggle.
+    function onReconciliationSettled(view, success) {
+      if (String(view) !== "Models") return
+      if (!modelsRoot._awaitingReconciliation) return
       if (modelsRoot.busy || modelsRoot._queue.length > 0) return
-      if (modelsRoot.service.dataRound <= modelsRoot._settledRound) return
-      modelsRoot._reconciling = false
-      modelsRoot.overrides = { picker: ({}), subagents: ({}) }
-    }
-
-    // The round this view was waiting for has closed. A fresh snapshot
-    // would already have retired the overrides above — the service assigns
-    // it before the round closes — so reaching here means the catalog read
-    // failed, and waiting for a confirmation that never came would park the
-    // optimistic toggle on screen indefinitely.
-    function onDataLoadingChanged() {
-      if (modelsRoot.service.dataLoading) return
-      if (!modelsRoot._reconciling) return
-      if (modelsRoot.busy || modelsRoot._queue.length > 0) return
-      if (modelsRoot.service.dataRound <= modelsRoot._settledRound) return
-      modelsRoot._giveUpReconciling()
+      modelsRoot._clearPendingReconciliation()
     }
   }
 
