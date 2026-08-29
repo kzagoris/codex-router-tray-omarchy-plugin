@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -259,9 +260,47 @@ Panel {
   // every fact that View required has succeeded, so it never presents a
   // partial round — or another View's round — as this one's freshness.
   function updatedCaption() {
-    if (!viewProjection || viewProjection.freshAt <= 0) return ""
-    return viewProjection.view + " updated "
-      + Model.formatClock(new Date(viewProjection.freshAt))
+    // The plugin's own version is provenance, not a Router fact: it renders
+    // even before the first successful read, when the freshness stamp has
+    // nothing to say yet. The Router's version stays on the hero line.
+    var parts = []
+    if (viewProjection && viewProjection.freshAt > 0)
+      parts.push(viewProjection.view + " updated "
+        + Model.formatClock(new Date(viewProjection.freshAt)))
+    if (root.pluginVersion !== "")
+      parts.push("plugin v" + root.pluginVersion)
+    return parts.join(" \u00b7 ")
+  }
+
+  // Read from the shipped manifest rather than duplicated as a constant here,
+  // so the footer can never disagree with the version the marketplace sees.
+  // FileView, not XMLHttpRequest: Qt disables local-file GET by default, so
+  // an XHR here silently yields nothing.
+  property string pluginVersion: ""
+
+  // FileView.path is a filesystem path, while the only handle a QML file has
+  // on its own directory is a file:// URL.
+  readonly property string manifestPath:
+    String(Qt.resolvedUrl("manifest.json")).replace(/^file:\/\//, "")
+
+  function loadPluginVersion(payload) {
+    var version = ""
+    try {
+      version = String(JSON.parse(payload).version || "")
+    } catch (error) {
+      version = ""
+    }
+    // A version is a manifest string we ship, but it reaches a Text like
+    // any other external value: bound and stripped before it renders.
+    root.pluginVersion = Model.plainText(version, 24)
+  }
+
+  FileView {
+    path: root.manifestPath
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.loadPluginVersion(text())
+    onLoadFailed: root.pluginVersion = ""
   }
 
   KeyboardPanel {

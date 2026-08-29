@@ -8,6 +8,8 @@ verified against the codex-router version noted in each entry.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-29
+
 The Router reader workflow deepened (`scratch/009`). No manifest schema
 change; payload shapes unchanged.
 
@@ -38,6 +40,13 @@ change; payload shapes unchanged.
   `invoke`, the broad data refresh, refresh deferral, read rounds). The
   capability secret still never reaches a projection, an error string or a
   log.
+- **The panel names its own version.** The footer caption carries the plugin
+  version next to the freshness stamp (`Status updated 3:37 PM · plugin
+  v0.4.0`), read at load from the shipped `manifest.json` via `FileView` so
+  it cannot drift from what the marketplace sees. It renders before the
+  first successful read, when there is no stamp yet, and disappears with the
+  rest of the caption if the manifest cannot be read. The Router's own
+  version stays on the hero line.
 
 ## [0.3.0] — 2026-08-28
 
