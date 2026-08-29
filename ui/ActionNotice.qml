@@ -23,6 +23,9 @@ Text {
 
   visible: notice !== ""
   text: actionNoticeRoot.notice
+  // The notice can carry raw stderr from control.mjs — a string this plugin
+  // does not control. Plain text keeps it from being parsed as rich text.
+  textFormat: Text.PlainText
   color: actionNoticeRoot.running ? actionNoticeRoot.dim : actionNoticeRoot.urgent
   font.family: actionNoticeRoot.fontFamily
   font.pixelSize: Style.font.caption

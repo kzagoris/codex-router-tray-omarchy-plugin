@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is `0.major.minor` while the plugin is pre-1.0; payload shapes are
 verified against the codex-router version noted in each entry.
 
+## [0.5.1] — 2026-08-29
+
+Security fix from the marketplace review. No behaviour change.
+
+- **`ui/ActionNotice.qml` pins `textFormat: Text.PlainText`.** It was the one
+  `Text` in the plugin left on Qt's default `AutoText`, and it renders the
+  mutation error the panel builds from the raw stderr of `control.mjs` — a
+  string this plugin does not control. Rich text there could have loaded a
+  remote image from inside the shell process. The notice is mounted without
+  `textFormat` at four call sites (`StatusView` twice, `ModelsView`,
+  `ProvidersView`), so fixing the component closes all of them. Every `Text`
+  in the plugin now declares `Text.PlainText`.
+
 ## [0.5.0] — 2026-08-29
 
 Limits are shown by default and scoped to the selected Provider
