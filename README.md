@@ -9,7 +9,7 @@ The widget replaces the Tauri desktop companion on Linux. It adds no second
 runtime and no Rust toolchain. The code is QML inside the Omarchy shell
 (Quickshell).
 
-Plugin id: `kzagoris.codex-router-tray` · Version 0.5.1 · License: MIT
+Plugin id: `kzagoris.codex-router-tray` · Version 0.5.2 · License: MIT
 
 <p align="center">
   <img src="preview.png" alt="The four panel views: Status, Usage, Providers, and Models" width="900">

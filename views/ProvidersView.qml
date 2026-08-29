@@ -2,6 +2,7 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 import "../ui"
+import "../Model.js" as Model
 
 // PROVIDERS view: the provider catalog with its enable toggles — a long list
 // in a place where it can no longer bury the sections beneath it.
@@ -68,12 +69,14 @@ Item {
       if (!p || String(p.id || "") === "") continue
       out.push({
         id: String(p.id),
-        name: String(p.displayName || p.id),
+        // Router prose, stripped and clamped: these three reach the shell's
+        // own tooltip and label items, which do not pin textFormat.
+        name: Model.plainText(p.displayName || p.id, 64),
         kind: String(p.kind || "api"),
         configured: p.configured === true,
         action: String(p.action || ""),
-        credentialLabel: String(p.credentialLabel || ""),
-        planNote: String(p.planNote || "")
+        credentialLabel: Model.plainText(p.credentialLabel, 64),
+        planNote: Model.plainText(p.planNote, 160)
       })
     }
     out.sort(function(a, b) {

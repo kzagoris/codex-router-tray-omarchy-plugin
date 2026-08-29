@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is `0.major.minor` while the plugin is pre-1.0; payload shapes are
 verified against the codex-router version noted in each entry.
 
+## [0.5.2] — 2026-08-29
+
+The same class of fix as 0.5.1, applied where the text leaves the plugin.
+
+- **`views/ProvidersView.qml` sanitizes the provider row prose.** The rows
+  built from `provider_setup` cast `displayName`, `credentialLabel` and
+  `planNote` with a bare `String()`. Name and plan note are then handed to
+  `PanelToolTip`, a shell component whose `Text` does not pin `textFormat`,
+  so router prose could still be parsed as rich text — outside any `Text`
+  this plugin owns. All three now go through `Model.plainText`, the strip-
+  and-clamp the rest of the reader already applies to router prose.
+- Audited every other value this plugin hands to a shell component
+  (`Button`, `PanelHero`, `PanelToolTip`, `WidgetButton`): the rest are
+  literals, locally formatted numbers and dates, or already sanitized —
+  `summary.version`, degraded names, provider display names and catalog
+  badge tooltips all pass through `plainText` at their source.
+
 ## [0.5.1] — 2026-08-29
 
 Security fix from the marketplace review. No behaviour change.
