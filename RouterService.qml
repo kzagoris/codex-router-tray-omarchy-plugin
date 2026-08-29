@@ -38,7 +38,7 @@ Item {
 
   // Re-read a caller key that was missing at startup. Reader-driven: the
   // panel asks on open and on Refresh, nothing polls (see InvokeClient).
-  function recheckCallerSecret() {
+  function _recheckCallerSecret() {
     root.io.recheckCallerSecret()
   }
 
@@ -46,16 +46,16 @@ Item {
   // demand itself, rather than this notification, decides whether that unlocks
   // a read: a hidden View must not be resurrected by a late secret.
   onHasCallerSecretChanged: {
-    if (root.hasCallerSecret) root.consumePendingDemand()
-    root.updateActiveViewProjection()
+    if (root.hasCallerSecret) root._consumePendingDemand()
+    root._updateActiveViewProjection()
   }
 
   // Last successfully parsed /health payload; null means the router was
   // never reached (or the answer was unusable) — the offline state.
-  property var health: null
+  property var _health: null
 
   // Authenticated reads. Null = never fetched or last fetch failed.
-  property var snapshot: null
+  property var _snapshot: null
   // Snapshot is read for a reason, never on cadence. Status, Providers and
   // Models share the one payload: `_snapshotCacheValid` says it may satisfy
   // entry demand without a read, `_snapshotCurrent` says the facts already
@@ -69,43 +69,33 @@ Item {
   // older epoch cannot answer for the Router that answers now, however
   // reachable the Router happens to be when its result lands.
   property int _routerEpoch: 0
-  property var providerSetup: null
-  property var providerUsage: null
+  property var _providerSetup: null
+  property var _providerUsage: null
 
   // account_usage rides on its own request and its own loading flag: it is
   // a slow upstream call that times out now and then (PLAN.md §2.2), so its
   // failure must not read as a general data failure nor hold any other
   // section's refresh hostage.
-  property var accountUsage: null
-  property bool accountUsageFailed: false
-  property bool accountUsageLoading: false
-  property string accountUsageError: ""
-  property double accountUsageFreshAt: 0
-  onAccountUsageChanged: root.updateActiveViewProjection()
-  onAccountUsageLoadingChanged: root.updateActiveViewProjection()
-  onAccountUsageErrorChanged: root.updateActiveViewProjection()
-  onAccountUsageFreshAtChanged: root.updateActiveViewProjection()
-  onAccountUsageEnabledChanged: root.updateActiveViewProjection()
+  property var _accountUsage: null
+  property bool _accountUsageFailed: false
+  property bool _accountUsageLoading: false
+  property string _accountUsageError: ""
+  property double _accountUsageFreshAt: 0
+  on_AccountUsageChanged: root._updateActiveViewProjection()
+  on_AccountUsageLoadingChanged: root._updateActiveViewProjection()
+  on_AccountUsageErrorChanged: root._updateActiveViewProjection()
+  on_AccountUsageFreshAtChanged: root._updateActiveViewProjection()
+  onAccountUsageEnabledChanged: root._updateActiveViewProjection()
 
   // First error from the shared data commands, message truncated to 500
   // chars like the tray does. Empty = last round had no shared failure;
   // individual payloads still update around it.
-  property string dataError: ""
-  property bool dataLoading: false
+  property string _dataError: ""
+  property bool _dataLoading: false
   // Wall-clock of the last round that produced any fresh payload.
-  property double lastUpdatedAt: 0
-  // Monotonic counter of read rounds, incremented as each one *begins*. A
-  // consumer that has just changed something needs to know a payload was
-  // read after its change landed, and a round that merely finishes late
-  // cannot answer for it. A counter rather than a clock: two rounds can
-  // begin in the same millisecond.
-  property int dataRound: 0
-
-  // Legacy reader-presence flag. No production caller writes it any more —
-  // the Panel declares `readerPresent` instead — but it still widens every
-  // visibility test below, so ticket 18 deletes it together with the rest of
-  // the legacy surface rather than piecemeal here.
-  property bool panelOpen: false
+  property double _lastUpdatedAt: 0
+  // Monotonic counter of read rounds, incremented as each one *begins*.
+  property int _dataRound: 0
 
   // The caller contract: a caller declares whether it has a reader and which
   // View is visible. Open, close and View switches are declarations, not
@@ -150,12 +140,12 @@ Item {
 
   onReaderPresentChanged: {
     if (!root.readerPresent) {
-      root.cancelInvisibleDemand()
+      root._cancelInvisibleDemand()
       return
     }
-    root.recheckCallerSecret()
-    root.pollHealth()
-    root.requestViewEntry(root.activeView)
+    root._recheckCallerSecret()
+    root._pollHealth()
+    root._requestViewEntry(root.activeView)
   }
   onActiveViewChanged: {
     if (root._normalizingActiveView) return
@@ -165,11 +155,11 @@ Item {
       root.activeView = "Status"
       root._normalizingActiveView = false
     }
-    root.updateActiveViewProjection()
+    root._updateActiveViewProjection()
     if (!root.readerPresent) return
-    root.cancelInvisibleDemand()
-    root.pollHealth()
-    root.requestViewEntry(root.activeView)
+    root._cancelInvisibleDemand()
+    root._pollHealth()
+    root._requestViewEntry(root.activeView)
   }
   onOnlineChanged: {
     root._routerEpoch++
@@ -179,21 +169,20 @@ Item {
       // with different settings, so retained facts are marked stale.
       root._snapshotCacheValid = false
       root._snapshotCurrent = false
-      root.updateActiveViewProjection()
+      root._updateActiveViewProjection()
       return
     }
     // Recovery discards cache validity rather than the facts, so the next
     // Snapshot-backed demand reads exactly once. A visible reader asks now;
     // a closed one leaves the obligation for its next entry.
     root._snapshotCacheValid = false
-    root.updateActiveViewProjection()
-    root.requestViewEntry(root.activeView)
+    root._updateActiveViewProjection()
+    root._requestViewEntry(root.activeView)
   }
-  onPanelOpenChanged: if (!root.panelOpen) root.cancelInvisibleDemand()
-  onCheckingProofVisibleChanged: if (!root.checkingProofVisible) root.cancelInvisibleDemand()
+  onCheckingProofVisibleChanged: if (!root.checkingProofVisible) root._cancelInvisibleDemand()
 
-  readonly property bool online: !!health && health.ok === true
-  readonly property var activity: health && health.activity ? health.activity : {}
+  readonly property bool online: !!_health && _health.ok === true
+  readonly property var activity: _health && _health.activity ? _health.activity : {}
 
   // One of "offline" | "generating" | "error" | "idle" — the four states
   // every consumer (dot, tooltip, hero meta) speaks. Degraded providers
@@ -210,12 +199,12 @@ Item {
   }
 
   readonly property bool degraded: {
-    if (!root.health) return false
-    return Array.isArray(root.health.degraded) && root.health.degraded.length > 0
+    if (!root._health) return false
+    return Array.isArray(root._health.degraded) && root._health.degraded.length > 0
   }
   readonly property var degradedNames: {
-    if (!root.health || !Array.isArray(root.health.degraded)) return []
-    return root.health.degraded.map(function(name) { return root.plainText(name, 48) })
+    if (!root._health || !Array.isArray(root._health.degraded)) return []
+    return root._health.degraded.map(function(name) { return root.plainText(name, 48) })
   }
 
   readonly property int activeCount: Number(activity.activeCount) || 0
@@ -229,10 +218,10 @@ Item {
   property string lastProviderName: ""
   readonly property string providerName: root.online ? lastProviderName : ""
 
-  readonly property string version: root.health ? root.plainText(health.version, 32) : ""
+  readonly property string version: root._health ? root.plainText(root._health.version, 32) : ""
 
   // Stable, bar-facing Router projection. Keep this object in place and bind
-  // individual facts, so a health event notifies only the facts it changes.
+  // individual facts, so a _health event notifies only the facts it changes.
   QtObject {
     id: routerSummaryProjection
 
@@ -290,24 +279,6 @@ Item {
   }
   readonly property var activeViewProjection: activeViewProjectionObject
 
-  // The codex target block of the last raw Snapshot — everything the mode
-  // switches and provider toggles reflect. Empty object until the first read
-  // lands. Status reads the same shape off its own View record instead (see
-  // the projection above); this legacy surface serves the Views that have not
-  // migrated yet and goes with the rest of them in ticket 18.
-  readonly property var codexTarget: {
-    var targets = root.snapshot && root.snapshot.targets ? root.snapshot.targets : null
-    return targets && targets.codex ? targets.codex : {}
-  }
-
-  // Top-level overview facts the Status view reads once, shaped here so the
-  // view binds to names rather than snapshot paths. chatgptSession rides in
-  // the same overview snapshot as `catalog`; old routers omit both.
-  readonly property var chatgptSession: root.snapshot && root.snapshot.chatgptSession
-    ? root.snapshot.chatgptSession : ({})
-  readonly property var catalog: root.snapshot && root.snapshot.catalog
-    ? root.snapshot.catalog : ({})
-
   // Everything the router says eventually lands in a Text item or in the
   // shell's shared tooltip, and neither should interpret it as markup: Qt's
   // default AutoText sniffs strings for rich text, so a provider name
@@ -339,17 +310,17 @@ Item {
 
   // Status, Providers and Models read their facts from the shared Snapshot;
   // Usage does not, so Snapshot policy never describes it.
-  function isSnapshotBackedView(view) {
-    return root.requiredCommandsForView(view).indexOf("control_snapshot") !== -1
+  function _isSnapshotBackedView(view) {
+    return root._requiredCommandsForView(view).indexOf("control_snapshot") !== -1
   }
 
-  function requiredCommandsForView(view) {
+  function _requiredCommandsForView(view) {
     if (view === "Usage") return ["provider_setup", "provider_usage"]
     if (view === "Providers") return ["control_snapshot", "provider_setup"]
     return ["control_snapshot"]
   }
 
-  function viewRecord(view) {
+  function _viewRecord(view) {
     var key = root.isSupportedView(view) ? view : "Status"
     var record = root._viewRecords[key]
     if (record) return record
@@ -359,16 +330,16 @@ Item {
     return record
   }
 
-  function globalBlockingReason() {
+  function _globalBlockingReason() {
     if (!root.online) return "offline"
     if (!root.hasCallerSecret) return "capability-missing"
     return ""
   }
 
-  function updateActiveViewProjection() {
-    var record = root.viewRecord(root.activeView)
+  function _updateActiveViewProjection() {
+    var record = root._viewRecord(root.activeView)
     var projection = activeViewProjectionObject
-    var blocking = root.globalBlockingReason()
+    var blocking = root._globalBlockingReason()
     // Read errors remain internal while globally blocked. Once the global
     // condition recovers, they no longer describe the newly unblocked reader
     // state, so clear them before any View can project stale failure prose.
@@ -376,8 +347,8 @@ Item {
       var views = Object.keys(root._viewRecords)
       for (var index = 0; index < views.length; index++)
         root._viewRecords[views[index]].readError = ""
-      root.accountUsageError = ""
-      root.accountUsageFailed = false
+      root._accountUsageError = ""
+      root._accountUsageFailed = false
     }
     root._lastGlobalBlockingReason = blocking
     var changed = false
@@ -387,7 +358,7 @@ Item {
     var visibleReadError = blocking === "" ? record.readError : ""
     if (projection.readError !== visibleReadError) { projection.readError = visibleReadError; changed = true }
     if (projection.freshAt !== record.freshAt) { projection.freshAt = record.freshAt; changed = true }
-    var stale = root.isSnapshotBackedView(record.view) && record.revision > 0
+    var stale = root._isSnapshotBackedView(record.view) && record.revision > 0
       && !root._snapshotCurrent
     if (projection.stale !== stale) { projection.stale = stale; changed = true }
     if (projection.dataRevision !== record.revision) { projection.dataRevision = record.revision; changed = true }
@@ -395,10 +366,10 @@ Item {
     if (projection.providerSetup !== record.providerSetup) { projection.providerSetup = record.providerSetup; changed = true }
     if (projection.providerUsage !== record.providerUsage) { projection.providerUsage = record.providerUsage; changed = true }
     var hasAccountUsage = record.view === "Usage" && root.accountUsageEnabled
-    var accountValue = hasAccountUsage ? root.accountUsage : null
-    var accountLoading = hasAccountUsage && root.accountUsageLoading
-    var accountError = hasAccountUsage && blocking === "" ? root.accountUsageError : ""
-    var accountFreshAt = hasAccountUsage ? root.accountUsageFreshAt : 0
+    var accountValue = hasAccountUsage ? root._accountUsage : null
+    var accountLoading = hasAccountUsage && root._accountUsageLoading
+    var accountError = hasAccountUsage && blocking === "" ? root._accountUsageError : ""
+    var accountFreshAt = hasAccountUsage ? root._accountUsageFreshAt : 0
     if (projection.accountUsageEnabled !== root.accountUsageEnabled) { projection.accountUsageEnabled = root.accountUsageEnabled; changed = true }
     if (projection.accountUsage !== accountValue) { projection.accountUsage = accountValue; changed = true }
     if (projection.accountUsageLoading !== accountLoading) { projection.accountUsageLoading = accountLoading; changed = true }
@@ -413,8 +384,8 @@ Item {
     if (changed) projection.revision = ++root._activeProjectionCommit
   }
 
-  function beginViewRead(view) {
-    var record = root.viewRecord(view)
+  function _beginViewRead(view) {
+    var record = root._viewRecord(view)
     record.refreshing++
     record.readToken++
     // Clearing here is what "starting a replacement read" means: the old
@@ -423,25 +394,25 @@ Item {
     var read = { record: record, token: record.readToken,
       previousError: record.readError, epoch: root._routerEpoch }
     record.readError = ""
-    root.updateActiveViewProjection()
+    root._updateActiveViewProjection()
     return read
   }
 
-  function finishViewRead(read, required, staged, failedError, allRequiredFresh, freshAtCeiling) {
+  function _finishViewRead(read, required, staged, failedError, allRequiredFresh, freshAtCeiling) {
     var record = read.record
     record.refreshing = Math.max(0, record.refreshing - 1)
     // A newer logical read owns the record's publication. Older shared
     // receivers still drain their refreshing count, but cannot publish an
     // error or overwrite the newer complete revision.
     if (read.token !== record.readToken) {
-      root.updateActiveViewProjection()
+      root._updateActiveViewProjection()
       return
     }
     if (failedError !== "") {
       // Store every local outcome; updateActiveViewProjection masks it while
       // global Panel chrome is authoritative and clears it on recovery.
       record.readError = root.plainText(failedError, 500)
-      root.updateActiveViewProjection()
+      root._updateActiveViewProjection()
       return
     }
     // A stale successful generation is intentionally silent. It cannot form
@@ -455,7 +426,7 @@ Item {
       // has already retired stale failure prose.
       if (read.epoch === root._routerEpoch)
         record.readError = read.previousError || ""
-      root.updateActiveViewProjection()
+      root._updateActiveViewProjection()
       return
     }
     if (required.indexOf("control_snapshot") !== -1) record.snapshot = staged.snapshot
@@ -467,7 +438,7 @@ Item {
     record.freshAt = freshAtCeiling > 0 ? Math.min(now, freshAtCeiling) : now
     // Revision is assigned last: it marks a fully published fact set.
     record.revision++
-    root.updateActiveViewProjection()
+    root._updateActiveViewProjection()
   }
 
   // The logical reads a demand opens. An ordinary demand answers its own
@@ -477,11 +448,11 @@ Item {
   // is visible. That is what makes a Refresh while the Panel is closed show
   // the requested state when the Panel opens. A View the recipe cannot
   // answer is excluded rather than left open forever.
-  function openViewReads(demand, commands, readsSnapshot) {
+  function _openViewReads(demand, commands, readsSnapshot) {
     var views
     if (demand.kind === "refresh") {
       views = root.supportedViews().filter(function(view) {
-        var required = root.requiredCommandsForView(view)
+        var required = root._requiredCommandsForView(view)
         for (var index = 0; index < required.length; index++)
           if (required[index] !== "control_snapshot" && commands.indexOf(required[index]) === -1)
             return false
@@ -493,9 +464,22 @@ Item {
 
     var states = []
     for (var viewIndex = 0; viewIndex < views.length; viewIndex++) {
-      var required = root.requiredCommandsForView(views[viewIndex])
+      var viewName = views[viewIndex]
+      var viewRecord = root._viewRecord(viewName)
+      // A view that already holds a complete Snapshot retains it on switch
+      // when the global cache is valid. Otherwise a later switch would
+      // overwrite the retained Status snapshot with the Providers snapshot
+      // that happens to be cached globally (see
+      // test_equalViewDataRevisionsStillPublishOneSwitchCommitEdge). This
+      // is only for ordinary view-entry; refresh and forced reads still fan
+      // out.
+      if (demand.kind === "view-entry" && viewRecord.revision > 0
+          && root._isSnapshotBackedView(viewName) && root._snapshotCacheValid) {
+        continue
+      }
+      var required = root._requiredCommandsForView(viewName)
       var state = {
-        viewRead: root.beginViewRead(views[viewIndex]),
+        viewRead: root._beginViewRead(viewName),
         required: required,
         staged: { snapshot: null, providerSetup: null, providerUsage: null },
         requiredError: "",
@@ -512,7 +496,7 @@ Item {
           // read nothing here, so it leaves the read incomplete rather than
           // restamping unchanged facts as newly fresh.
           if (root._snapshotCacheValid && demand.kind !== "cadence") {
-            state.staged.snapshot = root.snapshot
+            state.staged.snapshot = root._snapshot
             state.freshAtCeiling = root._snapshotFreshAt
           } else state.allRequiredFresh = false
         } else if (fact !== "control_snapshot" && commands.indexOf(fact) === -1) {
@@ -521,7 +505,7 @@ Item {
           // renders is still committed: the record's retained fact answers,
           // and without one the read stays incomplete — silently, exactly like
           // a cadence that bought nothing at all.
-          var retainedProp = root.factPropertyFor(fact)
+          var retainedProp = root._factPropertyFor(fact)
           var retained = state.viewRead.record[retainedProp]
           if (retained !== null && retained !== undefined)
             state.staged[retainedProp] = retained
@@ -532,7 +516,7 @@ Item {
       }
       // A demand answered entirely from cache or retention completes without
       // any read.
-      if (state.requiredPending === 0) closeViewReadState(state, state.allRequiredFresh)
+      if (state.requiredPending === 0) root._closeViewReadState(state, state.allRequiredFresh)
       states.push(state)
     }
     return states
@@ -541,7 +525,7 @@ Item {
   // Settle one physical command result against one View's logical read. A
   // View's own round is complete as soon as its required facts have all
   // settled; the broad physical recipe may still be serving the other Views.
-  function settleViewReadState(state, round, value, error, accepted) {
+  function _settleViewReadState(state, round, value, error, accepted) {
     if (!state.open) return
     if (state.required.indexOf(round.command) === -1) return
     if (error !== null) {
@@ -552,42 +536,42 @@ Item {
       state.allRequiredFresh = false
     }
     state.requiredPending--
-    if (state.requiredPending === 0) closeViewReadState(state, state.allRequiredFresh)
+    if (state.requiredPending === 0) root._closeViewReadState(state, state.allRequiredFresh)
   }
 
   // Close one View's logical read and publish whatever its round decided.
-  function closeViewReadState(state, allRequiredFresh) {
+  function _closeViewReadState(state, allRequiredFresh) {
     state.open = false
-    root.finishViewRead(state.viewRead, state.required, state.staged, state.requiredError,
+    root._finishViewRead(state.viewRead, state.required, state.staged, state.requiredError,
       allRequiredFresh, state.freshAtCeiling)
   }
 
-  function demandPriority(kind) {
+  function _demandPriority(kind) {
     if (kind === "refresh") return 3
     if (kind === "checking-proof") return 2
     if (kind === "reconciliation") return 2
     return 1
   }
 
-  function isVisibilityDemand(demand) {
+  function _isVisibilityDemand(demand) {
     return demand && (demand.kind === "view-entry" || demand.kind === "cadence"
       || demand.kind === "checking-proof")
   }
 
-  function demandIsStillVisible(demand) {
-    if (!root.isVisibilityDemand(demand)) return true
-    if (!(root.readerPresent || root.panelOpen)) return false
+  function _demandIsStillVisible(demand) {
+    if (!root._isVisibilityDemand(demand)) return true
+    if (!(root.readerPresent)) return false
     if (demand.view !== root.activeView) return false
     return demand.kind !== "checking-proof" || root.checkingProofVisible
   }
 
-  function cancelInvisibleDemand() {
+  function _cancelInvisibleDemand() {
     root._pendingDemands = root._pendingDemands.filter(function(demand) {
-      return !root.isVisibilityDemand(demand) || root.demandIsStillVisible(demand)
+      return !root._isVisibilityDemand(demand) || root._demandIsStillVisible(demand)
     })
   }
 
-  function demandKey(demand) {
+  function _demandKey(demand) {
     if (demand.kind === "reconciliation") return "reconciliation:" + demand.view
     if (demand.kind === "view-entry") return "view-entry"
     if (demand.kind === "cadence") return "cadence"
@@ -595,7 +579,7 @@ Item {
     return demand.kind
   }
 
-  function stageDemand(kind, view) {
+  function _stageDemand(kind, view) {
     var demand = {
       kind: kind,
       view: view || root.activeView,
@@ -604,33 +588,33 @@ Item {
       // so a Snapshot committed while it waits cannot answer for it.
       forcesSnapshot: kind === "refresh" || kind === "reconciliation"
         || kind === "checking-proof",
-      trailing: root.dataLoading && (kind === "refresh" || kind === "reconciliation")
+      trailing: root._dataLoading && (kind === "refresh" || kind === "reconciliation")
     }
-    if (root.isVisibilityDemand(demand) && !root.demandIsStillVisible(demand)) return
-    var key = root.demandKey(demand)
+    if (root._isVisibilityDemand(demand) && !root._demandIsStillVisible(demand)) return
+    var key = root._demandKey(demand)
     var next = root._pendingDemands.filter(function(existing) {
-      return root.demandKey(existing) !== key
+      return root._demandKey(existing) !== key
     })
     next.push(demand)
     root._pendingDemands = next
-    root.consumePendingDemand()
+    root._consumePendingDemand()
   }
 
-  function consumePendingDemand() {
-    root.cancelInvisibleDemand()
+  function _consumePendingDemand() {
+    root._cancelInvisibleDemand()
     if (!root.online || !root.hasCallerSecret) return false
     var selected = -1
     for (var index = 0; index < root._pendingDemands.length; index++) {
       var candidate = root._pendingDemands[index]
-      if (selected < 0 || root.demandPriority(candidate.kind)
-          > root.demandPriority(root._pendingDemands[selected].kind)) selected = index
+      if (selected < 0 || root._demandPriority(candidate.kind)
+          > root._demandPriority(root._pendingDemands[selected].kind)) selected = index
     }
     if (selected < 0) return false
     var demand = root._pendingDemands[selected]
     // Ordinary view demand is allowed to join the active physical command
     // batch. Forced Router-truth work retains its causal floor as one trailing
     // batch instead, so it cannot be answered by pre-intent payloads.
-    if (root.dataLoading && demand.trailing) return false
+    if (root._dataLoading && demand.trailing) return false
     var next = root._pendingDemands.slice()
     next.splice(selected, 1)
     // Every queued demand that arrived while the current shared recipe was
@@ -644,26 +628,26 @@ Item {
     // queued visibility reads are satisfied by that same round; retained
     // reconciliation intents remain independent and therefore survive.
     if (demand.kind === "refresh") {
-      next = next.filter(function(existing) { return !root.isVisibilityDemand(existing) })
+      next = next.filter(function(existing) { return !root._isVisibilityDemand(existing) })
     }
     root._pendingDemands = next
-    root.dispatchDemand(demand, root.dataLoading)
+    root._dispatchDemand(demand, root._dataLoading)
     return true
   }
 
-  function requestViewEntry(view) {
-    if (!(root.readerPresent || root.panelOpen) || !root.isSupportedView(view)) return
-    root.stageDemand("view-entry", view)
+  function _requestViewEntry(view) {
+    if (!(root.readerPresent) || !root.isSupportedView(view)) return
+    root._stageDemand("view-entry", view)
   }
 
   function requestRefresh() {
-    if (!root.hasCallerSecret) root.recheckCallerSecret()
+    if (!root.hasCallerSecret) root._recheckCallerSecret()
     if (root._healthInFlight) root._refreshHealthPending = true
-    else root.pollHealth()
-    root.stageDemand("refresh", root.activeView)
+    else root._pollHealth()
+    root._stageDemand("refresh", root.activeView)
   }
-  function requestReconciliation(originatingView) {
-    root.stageDemand("reconciliation", originatingView)
+  function _requestReconciliation(originatingView) {
+    root._stageDemand("reconciliation", originatingView)
   }
 
   // Semantic reconciliation: a successful mutation reports the View it
@@ -684,25 +668,25 @@ Item {
     } else if (rec === "offline") {
       root._pendingLifecycleOrigin = ""
       root._pendingLifecycleHealthBarrier = 0
-      root.pollHealth()
+      root._pollHealth()
     } else {
-      root.stageDemand("reconciliation", view)
+      root._stageDemand("reconciliation", view)
     }
   }
 
-  function invalidateSnapshotCache() {
+  function _invalidateSnapshotCache() {
     root._snapshotCacheValid = false
   }
-  function requestCheckingProof(view) {
-    root.stageDemand("checking-proof", view)
+  function _requestCheckingProof(view) {
+    root._stageDemand("checking-proof", view)
   }
-  function requestCadence() { root.stageDemand("cadence", root.activeView) }
+  function _requestCadence() { root._stageDemand("cadence", root.activeView) }
 
-  function dispatchDemand(demand, joinsActiveRecipe) {
-    root.dispatchDataRecipe(demand, joinsActiveRecipe === true)
+  function _dispatchDemand(demand, joinsActiveRecipe) {
+    root._dispatchDataRecipe(demand, joinsActiveRecipe === true)
   }
 
-  function semanticallyEqual(left, right) {
+  function _semanticallyEqual(left, right) {
     if (left === right) return true
     if (left === null || right === null || left === undefined || right === undefined)
       return false
@@ -711,7 +695,7 @@ Item {
     if (Array.isArray(left)) {
       if (left.length !== right.length) return false
       for (var i = 0; i < left.length; i++)
-        if (!root.semanticallyEqual(left[i], right[i])) return false
+        if (!root._semanticallyEqual(left[i], right[i])) return false
       return true
     }
     var leftKeys = Object.keys(left).sort()
@@ -719,13 +703,13 @@ Item {
     if (leftKeys.length !== rightKeys.length) return false
     for (var keyIndex = 0; keyIndex < leftKeys.length; keyIndex++) {
       var key = leftKeys[keyIndex]
-      if (key !== rightKeys[keyIndex] || !root.semanticallyEqual(left[key], right[key]))
+      if (key !== rightKeys[keyIndex] || !root._semanticallyEqual(left[key], right[key]))
         return false
     }
     return true
   }
 
-  function updateRouterSummary() {
+  function _updateRouterSummary() {
     if (routerSummaryProjection.online !== root.online)
       routerSummaryProjection.online = root.online
     if (routerSummaryProjection.routerState !== root.routerState)
@@ -739,17 +723,17 @@ Item {
     if (routerSummaryProjection.version !== root.version)
       routerSummaryProjection.version = root.version
     var names = root.degradedNames
-    if (!root.semanticallyEqual(routerSummaryProjection.degradedNames, names))
+    if (!root._semanticallyEqual(routerSummaryProjection.degradedNames, names))
       routerSummaryProjection.degradedNames = names
     var requests = root.activeRequests
-    if (!root.semanticallyEqual(routerSummaryProjection.activeRequests, requests))
+    if (!root._semanticallyEqual(routerSummaryProjection.activeRequests, requests))
       routerSummaryProjection.activeRequests = requests
-    root.updateActiveViewProjection()
+    root._updateActiveViewProjection()
   }
 
   // ------------------------------------------------------------- reading
 
-  function pollHealth() {
+  function _pollHealth() {
     // Health is one command too: shared callers observe the same live probe
     // instead of building an overlapping HTTP queue.
     if (root._healthInFlight) return false
@@ -757,99 +741,91 @@ Item {
     var generation = ++root._nextHealthGeneration
     root.io.fetchHealth(function(status, text) {
       root._healthInFlight = false
-      root.applyHealth(status, text, generation)
+      root._applyHealth(status, text, generation)
       if (root._refreshHealthPending) {
         root._refreshHealthPending = false
-        root.pollHealth()
+        root._pollHealth()
       }
     })
     return true
   }
 
-  function applyHealth(status, text, generation) {
+  function _applyHealth(status, text, generation) {
     if (generation !== undefined && generation < root._committedHealthGeneration) return
     if (status !== 200) {
-      root.health = null
+      root._health = null
       root._committedHealthGeneration = generation || root._committedHealthGeneration
-      root.updateRouterSummary()
-      root.consumePendingDemand()
+      root._updateRouterSummary()
+      root._consumePendingDemand()
       return
     }
     try {
       var parsed = JSON.parse(String(text))
-      root.health = parsed && typeof parsed === "object" ? parsed : null
+      root._health = parsed && typeof parsed === "object" ? parsed : null
       root._committedHealthGeneration = generation || root._committedHealthGeneration
       if (root.online) {
         var live = root.plainText(root.activity.provider, 48)
         if (live !== "") root.lastProviderName = live
       }
-      root.updateRouterSummary()
+      root._updateRouterSummary()
       if (root._pendingLifecycleOrigin !== "" && root.online
           && generation !== undefined
           && generation > root._pendingLifecycleHealthBarrier) {
         var pendingView = root._pendingLifecycleOrigin
         root._pendingLifecycleOrigin = ""
         root._pendingLifecycleHealthBarrier = 0
-        root.stageDemand("reconciliation", pendingView)
+        root._stageDemand("reconciliation", pendingView)
       }
-      root.consumePendingDemand()
+      root._consumePendingDemand()
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
-      root.health = null
+      root._health = null
       root._committedHealthGeneration = generation || root._committedHealthGeneration
-      root.updateRouterSummary()
+      root._updateRouterSummary()
     }
-  }
-
-  // Expand-step compatibility for legacy callers and tests. Production Panel,
-  // cadence and mutation paths declare narrower semantic intents above.
-  // This alias means explicit operator Refresh: all Panel facts, while the
-  // Panel is open or closed (see dispatchDataRecipe).
-  function refreshData() {
-    root.requestRefresh()
   }
 
   // There is no ordinary Snapshot cadence. Otherwise a demand reads Snapshot
   // when it forces Router truth or when no valid cache can answer it.
-  function shouldReadSnapshot(demand) {
+  function _shouldReadSnapshot(demand) {
     if (demand.kind === "cadence") return false
     return demand.forcesSnapshot === true || !root._snapshotCacheValid
   }
 
-  function commandsForDemand(demand) {
-    if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
+  function _commandsForDemand(demand) {
+    if (demand.kind === "view-entry") return root._requiredCommandsForView(demand.view)
     if (demand.kind === "cadence")
       return demand.view === "Usage" ? ["provider_usage"] : []
     if (demand.kind === "checking-proof") return ["control_snapshot"]
-    if (demand.kind === "reconciliation") return root.requiredCommandsForView(demand.view)
+    if (demand.kind === "reconciliation") return root._requiredCommandsForView(demand.view)
     return ["control_snapshot", "provider_setup", "provider_usage"]
   }
 
   // Account usage is an operator intent, not a cadence fact: the slow quota
   // call runs when the operator arrives at Usage and when Refresh asks for
   // all Panel facts — never because a timer ticked.
-  function shouldReadAccountUsage(demand) {
+  function _shouldReadAccountUsage(demand) {
     if (!root.accountUsageEnabled) return false
     if (demand.kind === "view-entry") return demand.view === "Usage"
     return demand.kind === "refresh"
   }
 
   // The one place a Router command is paired with the fact it fills.
-  readonly property var factProperties: ({
+  readonly property var _factProperties: ({
     control_snapshot: "snapshot",
     provider_setup: "providerSetup",
     provider_usage: "providerUsage"
   })
-  function factPropertyFor(command) {
-    return root.factProperties[command] || ""
+  function _factPropertyFor(command) {
+    return root._factProperties[command] || ""
   }
 
-  function dispatchDataRecipe(demand, joinsActiveRecipe) {
+  function _dispatchDataRecipe(demand, joinsActiveRecipe) {
     if (!root.online || !root.hasCallerSecret) return
 
-    var commands = root.commandsForDemand(demand)
+    var commands = root._commandsForDemand(demand)
     var readsSnapshot = commands.indexOf("control_snapshot") !== -1
-      && root.shouldReadSnapshot(demand)
+      && root._shouldReadSnapshot(demand)
     // A Snapshot read in flight is already replacing the cache, so demand
     // arriving beside it joins that request rather than committing the
     // payload it supersedes.
@@ -858,7 +834,7 @@ Item {
     for (var commandIndex = 0; commandIndex < commands.length; commandIndex++) {
       var command = commands[commandIndex]
       if (command === "control_snapshot" && !readsSnapshot) continue
-      var prop = root.factPropertyFor(command)
+      var prop = root._factPropertyFor(command)
       if (prop !== "") rounds.push({ command: command, prop: prop })
     }
     // Demand a valid cache answers in full reads nothing, so it opens no
@@ -866,15 +842,15 @@ Item {
     var readsAnything = rounds.length > 0
     if (readsAnything) {
       root._activeRecipeCount++
-      root.dataLoading = true
-      if (!joinsActiveRecipe) root.dataRound++
+      root._dataLoading = true
+      if (!joinsActiveRecipe) root._dataRound++
     }
 
     var pending = rounds.length
     var gotFresh = false
     var firstSharedError = ""
     var roundOpen = true
-    var viewReadStates = root.openViewReads(demand, commands, readsSnapshot)
+    var viewReadStates = root._openViewReads(demand, commands, readsSnapshot)
 
     function receive(round, generation, value, error, epoch) {
       var accepted = false
@@ -882,7 +858,7 @@ Item {
         gotFresh = true
         var committed = Number(root._committedCommandGeneration[round.command]) || 0
         if (generation >= committed) {
-          root[round.prop] = value
+          root["_" + round.prop] = value
           root._committedCommandGeneration[round.command] = generation
           accepted = true
           // Only a Snapshot proved against a reachable Router validates the
@@ -893,14 +869,14 @@ Item {
             root._snapshotCacheValid = true
             root._snapshotCurrent = true
             root._snapshotFreshAt = root.clock.now()
-            root.updateActiveViewProjection()
+            root._updateActiveViewProjection()
           }
         }
       } else if (firstSharedError === "") {
         firstSharedError = error
       }
       for (var stateIndex = 0; stateIndex < viewReadStates.length; stateIndex++)
-        root.settleViewReadState(viewReadStates[stateIndex], round, value, error, accepted)
+        root._settleViewReadState(viewReadStates[stateIndex], round, value, error, accepted)
 
       // A retry parked by a mid-round rotation can land after the round
       // closed: its fresh payload still lands above, but it must not touch
@@ -910,12 +886,12 @@ Item {
       if (pending > 0) return
       roundOpen = false
       root._activeRecipeCount = Math.max(0, root._activeRecipeCount - 1)
-      root.dataLoading = root._activeRecipeCount > 0
-      root.dataError = firstSharedError
-      if (gotFresh) root.lastUpdatedAt = root.clock.now()
+      root._dataLoading = root._activeRecipeCount > 0
+      root._dataError = firstSharedError
+      if (gotFresh) root._lastUpdatedAt = root.clock.now()
       if (demand.kind === "reconciliation")
         root.reconciliationSettled(demand.view, firstSharedError === "")
-      root.consumePendingDemand()
+      root._consumePendingDemand()
     }
 
     function receiverFor(round) {
@@ -933,24 +909,24 @@ Item {
       // `refreshing` does not stick.
       for (var openIndex = 0; openIndex < viewReadStates.length; openIndex++)
         if (viewReadStates[openIndex].open)
-          closeViewReadState(viewReadStates[openIndex], false)
+            root._closeViewReadState(viewReadStates[openIndex], false)
       if (demand.kind === "reconciliation")
         root.reconciliationSettled(demand.view, true)
-      root.consumePendingDemand()
+      root._consumePendingDemand()
       return
     }
 
     for (var i = 0; i < rounds.length; i++) {
-      root.invokeShared(rounds[i].command, {}, receiverFor(rounds[i]))
+      root._invokeShared(rounds[i].command, {}, receiverFor(rounds[i]))
     }
 
-    if (root.shouldReadAccountUsage(demand)) root.refreshAccountUsage()
+    if (root._shouldReadAccountUsage(demand)) root._refreshAccountUsage()
   }
 
   // The command boundary, rather than a particular View recipe, owns
   // coalescing. This keeps a Status and Providers demand from issuing the
   // same Snapshot read when their recipes overlap.
-  function invokeShared(command, args, receiver) {
+  function _invokeShared(command, args, receiver) {
     var active = root._inFlightCommands[command]
     // A request that left before the Router last changed reachability cannot
     // answer demand raised after it: recovery would otherwise be satisfied by
@@ -977,33 +953,27 @@ Item {
     return generation
   }
 
-  // Fully independent sub-state: own flag, no share of dataLoading/pending,
+  // Fully independent sub-state: own flag, no share of _dataLoading/pending,
   // so a hung quota call never disables Refresh or freezes the footer
   // (PLAN.md §5) and its slower schedule never reads as core Usage
   // freshness. Triggered only by shouldReadAccountUsage — Usage entry and
   // explicit Refresh — never by a cadence tick.
-  function refreshAccountUsage() {
-    if (!root.accountUsageEnabled || root.accountUsageLoading) return
+  function _refreshAccountUsage() {
+    if (!root.accountUsageEnabled || root._accountUsageLoading) return
     if (!root.online || !root.hasCallerSecret) return
 
-    root.accountUsageLoading = true
-    root.accountUsageError = ""
+    root._accountUsageLoading = true
+    root._accountUsageError = ""
     root.io.invoke("account_usage", {}, function(value, error) {
-      root.accountUsageLoading = false
-      root.accountUsageFailed = error !== null
+      root._accountUsageLoading = false
+      root._accountUsageFailed = error !== null
       if (error === null) {
-        root.accountUsage = value
-        root.accountUsageFreshAt = root.clock.now()
+        root._accountUsage = value
+        root._accountUsageFreshAt = root.clock.now()
       } else {
-        root.accountUsageError = root.plainText(error, 500)
+        root._accountUsageError = root.plainText(error, 500)
       }
     })
-  }
-
-  // Legacy lifecycle entry retained for workflow tests. New callers use
-  // reportMutationOutcome with recovery "online".
-  function reconcileAfterServiceCommand(originatingView) {
-    root.reportMutationOutcome(originatingView, "online")
   }
 
   // ------------------------------------------------------- web panel link
@@ -1032,24 +1002,24 @@ Item {
     // one fact a Router request changes autonomously. Switching away from
     // Usage — or closing the Panel — stops it here rather than letting ticks
     // buy facts nobody is reading.
-    dataCadenceActive: (root.panelOpen || root.readerPresent)
+    dataCadenceActive: root.readerPresent
       && root.activeView === "Usage"
       && root.online && root.hasCallerSecret
     // The exception ends the moment its condition, its View or the reader
     // does, so it can never decay into general Snapshot polling.
-    proofCadenceActive: (root.panelOpen || root.readerPresent)
+    proofCadenceActive: root.readerPresent
       && root.activeView === "Models" && root.checkingProofVisible
       && root.online && root.hasCallerSecret
 
-    onHealthCadenceDue: root.pollHealth()
+    onHealthCadenceDue: root._pollHealth()
     onDataCadenceDue: {
-      root.requestCadence()
+      root._requestCadence()
     }
     onProofCadenceDue: {
-      root.requestCheckingProof(root.activeView)
+      root._requestCheckingProof(root.activeView)
     }
     onRecoveryDelayDue: {
-      root.pollHealth()
+      root._pollHealth()
     }
   }
 }

@@ -479,8 +479,8 @@ Panel {
 
           Button {
             width: parent.width
-            text: root.service && root.service.dataLoading ? "Refreshing…" : "Refresh"
-            enabled: !!root.service && !root.service.dataLoading
+            text: root.viewProjection && root.viewProjection.refreshing ? "Refreshing…" : "Refresh"
+            enabled: !!root.viewProjection && !root.viewProjection.refreshing
             bordered: true
             foreground: root.foreground
             fontFamily: root.fontFamily
