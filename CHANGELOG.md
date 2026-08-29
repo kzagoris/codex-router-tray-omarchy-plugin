@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is `0.major.minor` while the plugin is pre-1.0; payload shapes are
 verified against the codex-router version noted in each entry.
 
+## [Unreleased]
+
+The Router reader workflow deepened (`scratch/009`). No manifest schema
+change; payload shapes unchanged.
+
+- **One reader, one definition of refresh.** The Panel declares that a reader
+  is present and which view is active; RouterService maps that demand to
+  router commands, stages reads across health and capability recovery,
+  coalesces overlapping demand, and publishes two stable projections
+  (`routerSummary`, `activeViewProjection`). Views no longer compose their own
+  timers or reads.
+- **The 174 KB Snapshot is read for a reason.** Status, Providers and Models
+  share one cached Snapshot that answers view entry without a read; it is
+  re-read on explicit Refresh, after a relevant mutation, and once after the
+  Router returns from offline. The open-panel 30-second Snapshot poll is gone;
+  the only timed Snapshot read left is a visible `checking` Proof in Models.
+- **Usage reads what Usage needs.** Entering Usage reads Provider setup and
+  Provider usage; only Provider usage repeats on the data interval while
+  Usage is visible. ChatGPT account usage runs on entry and explicit Refresh
+  only, with loading, failure and freshness of its own, so a slow quota call
+  cannot hold the rest of the view hostage.
+- **Errors and freshness are per view.** A failed read appears only in the
+  view that required the fact; a view keeps its last complete facts, and its
+  Updated caption advances only when every required fact succeeded. After the
+  Router was offline, Snapshot-backed views show their retained facts as
+  stale until one fresh Snapshot commits.
+- **Refresh means every Panel fact** — from the button or over IPC, with the
+  panel open or closed; account usage included when enabled.
+- **The legacy RouterService surface is gone** (raw fact properties, generic
+  `invoke`, the broad data refresh, refresh deferral, read rounds). The
+  capability secret still never reaches a projection, an error string or a
+  log.
+
 ## [0.3.0] — 2026-08-28
 
 Router 0.5.0 follow-ups. No manifest schema change. Payloads verified against
@@ -90,6 +123,7 @@ The first public release. It has the bar pill with the live health dot. Its
 panel has the modes, the activity, the usage, and the provider controls. The
 panel also has the maintenance commands and the link to the web panel.
 
+[Unreleased]: https://github.com/kzagoris/codex-router-tray-omarchy-plugin/compare/0.3.0...HEAD
 [0.3.0]: https://github.com/kzagoris/codex-router-tray-omarchy-plugin/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/kzagoris/codex-router-tray-omarchy-plugin/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/kzagoris/codex-router-tray-omarchy-plugin/releases/tag/0.1.0
