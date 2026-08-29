@@ -50,6 +50,16 @@ Panel {
   // reconciliation.
   readonly property var controlProcess: hostWidget ? hostWidget.controlProcess : null
 
+  // The two stable reader projections. Chrome reads Router facts from the
+  // summary and the global blocking condition from the active-View
+  // projection; neither is derived from raw health here.
+  readonly property var summary: service ? service.routerSummary : null
+  readonly property var viewProjection: service ? service.activeViewProjection : null
+
+  // Which of the four Views is on screen. Declared, not commanded: the reader
+  // decides what a View change owes in reads.
+  readonly property string activeViewName: viewTabs[selectedView]
+
   // ------------------------------------------------------------- palette
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -75,11 +85,28 @@ Panel {
   // restarts (this object is rebuilt then).
   property int selectedView: 0
 
-  onSelectedViewChanged: {
-    if (panelFlick) panelFlick.contentY = 0
-    if (!root.opened || !root.service) return
-    root.service.activeView = root.viewTabs[root.selectedView]
-    root.service.requestViewEntry(root.service.activeView)
+  // Panel-local only. The reader learns about the switch from the declaration
+  // below, so this handler owns nothing but the scroll position.
+  onSelectedViewChanged: if (panelFlick) panelFlick.contentY = 0
+
+  // The whole reader lifecycle contract: this Panel has a reader while it is
+  // up, and that reader is looking at one named View. Open, close and switch
+  // compose no reader operations — the declaration is the request.
+  //
+  // The View declaration carries no `when: opened`, so it is already correct
+  // when reader presence flips: a reader never enters on the previous View.
+  Binding {
+    target: root.service
+    property: "activeView"
+    value: root.activeViewName
+    when: !!root.service
+  }
+
+  Binding {
+    target: root.service
+    property: "readerPresent"
+    value: root.opened
+    when: !!root.service
   }
 
   // ---- Open/close. Overridden (not inherited) so a hotkey summon suppresses
@@ -123,11 +150,9 @@ Panel {
 
   function refreshNow() {
     if (!root.service) return
-    // A key written after the shell started is invisible until somebody
-    // asks for it again; panel open and Refresh are the two moments a
-    // reader is actually waiting on the answer.
-    root.service.recheckCallerSecret()
-    root.service.pollHealth()
+    // The operator's complete read intent. Which probes it owes — a caller key
+    // written after startup, health, the authenticated facts — is the reader's
+    // policy, not this Panel's recipe.
     root.service.requestRefresh()
   }
 
@@ -135,46 +160,50 @@ Panel {
     refreshNow()
   }
 
-  // The authenticated endpoints are polled only while somebody reads them.
+  // Reader presence is declared above; opening only resets this Panel's own
+  // transient chrome.
   onOpenedChanged: {
-    if (!root.service) return
-    root.service.panelOpen = root.opened
-    if (opened) {
-      nowMs = Date.now()
-      if (panelFlick) panelFlick.contentY = 0
-      root.service.activeView = root.viewTabs[root.selectedView]
-      root.service.recheckCallerSecret()
-      root.service.pollHealth()
-      root.service.requestViewEntry(root.service.activeView)
-    }
+    if (!opened) return
+    nowMs = Date.now()
+    if (panelFlick) panelFlick.contentY = 0
   }
 
   // --------------------------------------------------------- chrome state
 
   // Hero meta line, uppercase small-caps like agents' plan labels.
   function heroMeta() {
-    var state = service ? service.routerState : "offline"
+    var state = summary ? summary.routerState : "offline"
     if (state === "offline") return "OFFLINE"
-    if (state === "generating") return "GENERATING · " + service.activeCount + " ACTIVE"
+    if (state === "generating") return "GENERATING · " + summary.activeCount + " ACTIVE"
     if (state === "error") {
-      var names = Model.degradedSentence(service.degradedNames).replace(/^Degraded: /, "")
+      var names = Model.degradedSentence(summary.degradedNames).replace(/^Degraded: /, "")
       return (names !== "" ? "DEGRADED: " + names : "ERROR").toUpperCase()
     }
-    var version = service.version
+    var version = summary.version
     return version !== "" ? "RUNNING · V" + version.toUpperCase() : "RUNNING"
   }
 
+  // The reader's global blocking condition: the one thing that explains every
+  // View at once. Empty while authenticated reads are possible.
+  readonly property string blockingReason: viewProjection ? viewProjection.blockingReason : "offline"
+
   // One box, worst news first: an unreachable router beats a missing key
   // beats a failed read beats degradation — each earlier line makes the
-  // later ones unreadable anyway.
+  // later ones unreadable anyway. The first two are the reader's global
+  // condition and belong here permanently. `dataError` is still the old
+  // whole-Panel read failure: the View migrations (tickets 11-14) move it to
+  // the View that required the failed fact, and it leaves this box then.
   readonly property string statusMessage: {
-    if (!service || service.routerState === "offline")
+    if (root.blockingReason === "offline")
       return "Router offline — start it with systemctl --user start codex-router."
-    if (!service.hasCallerSecret)
+    if (root.blockingReason === "capability-missing")
       return "Caller key missing or unreadable — recreate it below, or run ./bin/doctor --fix."
+    // Past the global condition every remaining line needs a reader to
+    // describe; without one, "offline" above has already said everything.
+    if (!service) return ""
     if (service.dataError !== "") return service.dataError
-    if (service.degraded)
-      return Model.degradedSentence(service.degradedNames)
+    if (summary.degraded)
+      return Model.degradedSentence(summary.degradedNames)
     return ""
   }
 
@@ -192,7 +221,7 @@ Panel {
   function runAction(domain, key, label, args) {
     if (!root.service || !root.controlProcess || root.controlProcess.mutationRunning) return
     // Offline, only service commands make sense — starting it above all.
-    if (!root.service.online && !root.controlProcess.isServiceCommand(args)) return
+    if (!root.summary.online && !root.controlProcess.isServiceCommand(args)) return
     root.actionDomain = domain
     root.activeControlKey = key
     root.controlProcess.runControl(label, args, function(error) {
@@ -349,7 +378,7 @@ Panel {
                 readonly property bool mine: root.activeControlKey === "recreate-key"
                   && !!root.controlProcess && root.controlProcess.mutationRunning
 
-                visible: !!root.service && root.service.online && !root.service.hasCallerSecret
+                visible: root.blockingReason === "capability-missing"
                 width: parent.width
                 text: mine ? "Recreating key…" : "Recreate caller key"
                 tooltipText: "Runs doctor --fix to regenerate the router caller key"

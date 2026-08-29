@@ -96,14 +96,15 @@ Item {
   // begin in the same millisecond.
   property int dataRound: 0
 
-  // Set by the panel while its popup is up: the authenticated endpoints are
-  // only polled for a reader, never behind a closed panel.
+  // Legacy reader-presence flag. No production caller writes it any more —
+  // the Panel declares `readerPresent` instead — but it still widens every
+  // visibility test below, so ticket 18 deletes it together with the rest of
+  // the legacy surface rather than piecemeal here.
   property bool panelOpen: false
 
-  // The expanding caller contract. A caller declares whether it has a reader
-  // and which View is visible; later workflow tickets turn that declaration
-  // into View-specific demand. `panelOpen` remains for the unchanged callers
-  // during this compatibility step.
+  // The caller contract: a caller declares whether it has a reader and which
+  // View is visible. Open, close and View switches are declarations, not
+  // composed reader operations.
   property bool readerPresent: false
   property string activeView: "Status"
   property bool _normalizingActiveView: false
@@ -519,6 +520,14 @@ Item {
   // legacy-shaped until ticket 15 defines Refresh completeness and ticket 16
   // maps real mutation outcomes to reconciliation recipes.
   function requestRefresh() {
+    // A caller key written after the shell started is invisible until somebody
+    // asks for it again, and Refresh is the operator waiting on that answer.
+    // Part of the intent, not a step a caller composes around it. A capability
+    // already in hand cannot be made more available by re-reading it, so the
+    // ordinary Refresh asks for nothing. The adapter short-circuits the same
+    // case; deciding whether a read is useful is reader policy, and it should
+    // not depend on an adapter internal to stay true.
+    if (!root.hasCallerSecret) root.recheckCallerSecret()
     // A known-good health fact is enough to start the authenticated recipe,
     // but Refresh still samples health. Starting both effects here avoids
     // putting useful authenticated work behind an answer we already have.

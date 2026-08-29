@@ -73,6 +73,12 @@ BarWidget {
   readonly property alias routerService: router
   readonly property alias controlProcess: control
 
+  // Every Router fact this widget paints comes from the always-live Router
+  // summary rather than from raw health. The object identity is stable, so
+  // these bindings receive one notification per changed fact rather than one
+  // per health payload.
+  readonly property var summary: router.routerSummary
+
   // ------------------------------------------------------------ settings
 
   readonly property int healthIntervalSec: {
@@ -119,9 +125,9 @@ BarWidget {
   readonly property color generatingColor: "#c9973f"
 
   readonly property color dotColor: {
-    if (router.routerState === "generating") return generatingColor
-    if (router.routerState === "error") return urgent
-    if (router.routerState === "idle") return okColor
+    if (root.summary.routerState === "generating") return generatingColor
+    if (root.summary.routerState === "error") return urgent
+    if (root.summary.routerState === "idle") return okColor
     return Color.muted
   }
 
@@ -129,7 +135,7 @@ BarWidget {
   // during a long generation. Keyed on in-flight requests rather than the
   // state word, so a degraded-but-serving router pulses red instead of
   // sitting frozen.
-  readonly property bool pulsing: router.activeCount > 0
+  readonly property bool pulsing: root.summary.activeCount > 0
 
   // ------------------------------------------------------------- label
 
@@ -138,27 +144,30 @@ BarWidget {
   // successful poll (and whenever the router is offline) fall back to the
   // module name.
   readonly property bool providerLabelWanted: setting("showProviderText", "Icon only") === "Provider name"
-  readonly property string labelText: router.providerName !== "" ? router.providerName : "Codex Router"
+  readonly property string labelText: root.summary.providerName !== ""
+    ? root.summary.providerName : "Codex Router"
   readonly property bool labelVisible: providerLabelWanted && !vertical
 
   // A property, not a function: Bar.showTooltip snapshots the string at
   // hover-enter only, so a live re-evaluation needs this push to update an
   // already-open tooltip — exactly the idle→generating moment it matters.
   readonly property string tooltipTextLive: {
-    if (router.routerState === "generating")
-      return "Codex Router — generating (" + router.activeCount + " active)"
-    if (router.routerState === "error") {
+    if (root.summary.routerState === "generating")
+      return "Codex Router — generating (" + root.summary.activeCount + " active)"
+    if (root.summary.routerState === "error") {
       // The helper already caps the whole sentence at 200; the outer clamp
       // keeps the shell's tooltip bound no matter how the helper is called.
-      var degradationText = Model.degradedSentence(router.degradedNames)
+      // plainText is the reader's shared sanitizer, not a Router fact.
+      var degradationText = Model.degradedSentence(root.summary.degradedNames)
       var base = degradationText !== ""
         ? "Codex Router — " + degradationText : "Codex Router — error"
-      var complete = router.activeCount > 0
-        ? base + " (" + router.activeCount + " active)" : base
+      var complete = root.summary.activeCount > 0
+        ? base + " (" + root.summary.activeCount + " active)" : base
       return router.plainText(complete, 200)
     }
-    if (router.routerState === "idle")
-      return "Codex Router — idle" + (router.version !== "" ? " · v" + router.version : "")
+    if (root.summary.routerState === "idle")
+      return "Codex Router — idle"
+        + (root.summary.version !== "" ? " · v" + root.summary.version : "")
     return "Codex Router — offline"
   }
   onTooltipTextLiveChanged: {
@@ -171,7 +180,7 @@ BarWidget {
   // plus the provider id when the bar-label setting asks for one. The id
   // line elides to the bar's fixed thickness.
   readonly property bool verticalNameLine: root.vertical && providerLabelWanted
-    && router.providerName !== ""
+    && root.summary.providerName !== ""
 
   // ---- Panel popup. Shape contract for shell.summon/hide/toggle routing:
   //      Bar.findPanelWidget requires open/close/opened on the bar-widget
@@ -190,9 +199,10 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.toggle()
   }
 
+  // One reader intent, not a composed sequence: the reader decides which
+  // probes an explicit Refresh owes (capability, health, authenticated facts).
   function refresh() {
-    router.pollHealth()
-    if (panelLoader.item && panelLoader.item.refresh) panelLoader.item.refresh()
+    router.requestRefresh()
   }
 
   // Forwarded so this widget can stand in for the panel as the bar's popout
@@ -313,7 +323,7 @@ BarWidget {
         visible: root.verticalNameLine
         width: parent.width
         height: Style.bar.iconSlot
-        text: router.providerName
+        text: root.summary.providerName
         color: button.foreground
         font.family: button.fontFamily
         font.pixelSize: Math.max(Style.space(9), Math.round(button.fontSize * 0.55))
