@@ -6,14 +6,21 @@ import "../ui"
 // PROVIDERS view: the provider catalog with its enable toggles — a long list
 // in a place where it can no longer bury the sections beneath it.
 //
-// The panel hands over the service, its coordinator surface (`panel`:
-// runAction/domainNotice) and the palette.
+// The panel hands over the two reader projections — the Router summary for
+// live Router facts, the active-View projection for this View's own Snapshot
+// and Provider setup facts — the ControlProcess its mutations run through,
+// its own coordinator surface (`panel`: runAction/domainNotice/
+// activeControlKey) and the palette.
 Item {
   id: providersRoot
 
   // ------------------------------------------------------------- contract
 
+  // Facts arrive as projections; `service` remains only for the semantic
+  // web-panel operation, which is a reader intent rather than a fact.
   property var service: null
+  property var summary: null
+  property var projection: null
   property var controlProcess: null
   property var panel: null
 
@@ -31,16 +38,17 @@ Item {
 
   // True while nothing user-facing should accept clicks: the router is
   // unreachable or a mutation is already running.
-  readonly property bool actionsLocked: !service || !service.online
+  readonly property bool actionsLocked: !summary || !summary.online
     || !controlProcess || controlProcess.mutationRunning
 
-  // One guard for every section that needs live, authenticated data.
-  readonly property bool controlsReachable: !!service && service.online
-    && service.hasCallerSecret
+  // One guard for every section that needs live, authenticated data: the
+  // reader's global blocking condition is exactly that question.
+  readonly property bool controlsReachable: !!providersRoot.projection
+    && providersRoot.projection.blockingReason === ""
 
-  // Enabled state comes from the snapshot's enabledProviders, not from the
-  // setup payload.
-  readonly property var codexTarget: service ? service.codexTarget : ({})
+  // The codex target block of this View's own Snapshot — everything the
+  // enabled toggle reflects. Empty object until Providers' first read commits.
+  readonly property var codexTarget: projection ? projection.target : ({})
   readonly property var enabledProviderIds: Array.isArray(providersRoot.codexTarget.enabledProviders)
     ? providersRoot.codexTarget.enabledProviders : []
 
@@ -52,7 +60,7 @@ Item {
   // rows that can actually be flipped sit at the top; alphabetical inside
   // each group.
   readonly property var setupProviders: {
-    var setup = service ? service.providerSetup : null
+    var setup = projection ? projection.providerSetup : null
     var list = setup && Array.isArray(setup.providers) ? setup.providers : []
     var out = []
     for (var i = 0; i < list.length; i++) {

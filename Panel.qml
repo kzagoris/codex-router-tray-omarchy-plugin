@@ -431,6 +431,8 @@ Panel {
             visible: root.selectedView === 2
             width: parent.width
             service: root.service
+            summary: root.summary
+            projection: root.viewProjection
             controlProcess: root.controlProcess
             panel: root
             foreground: root.foreground

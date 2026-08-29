@@ -683,6 +683,7 @@ Item {
   // 16 for reconciliation.
   function commandsForDemand(demand) {
     if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
+    if (demand.kind === "cadence" && demand.view === "Providers") return []
     return ["control_snapshot", "provider_setup", "provider_usage"]
   }
 
@@ -824,6 +825,14 @@ Item {
     if (!readsAnything) {
       // Nothing was dispatched, so no completion callback will drain the
       // queue: whatever else is waiting gets its chance here instead.
+      // A cadence that reads nothing (Providers has no authenticated cadence)
+      // still opened a logical view read above. Close it without claiming
+      // freshness or inventing an error, so `refreshing` does not stick.
+      if (viewReadOpen) {
+        viewReadOpen = false
+        root.finishViewRead(viewRead, required, staged, requiredError, false,
+          freshAtCeiling)
+      }
       root.consumePendingDemand()
       return
     }
