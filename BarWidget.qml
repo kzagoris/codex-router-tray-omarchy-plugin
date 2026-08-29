@@ -44,28 +44,12 @@ BarWidget {
     accountUsageEnabled: root.accountUsageWanted
   }
 
-  // Mutations are a sibling of the reader: the Panel and Models view receive
-  // this process directly. This composition retains the interim "mutate,
-  // then re-read" policy until RouterService receives semantic outcomes.
+  // Mutations are a sibling of the reader: the Panel and Models view
+  // receive this process directly and report semantic outcomes to
+  // RouterService, which maps them to the correct reads.
   ControlProcess {
     id: control
     sourceRootOverride: root.sourceRootSetting
-  }
-
-  Connections {
-    target: control
-
-    function onJobSucceeded(args) {
-      // Service commands bounce the daemon, so an immediate read races it.
-      // Ordinary mutations reconcile immediately unless Models is draining
-      // its coalesced queue.
-      if (control.isServiceCommand(args)) {
-        router.reconcileAfterServiceCommand(router.activeView)
-      } else if (!control.deferAutoRefresh) {
-        router.pollHealth()
-        router.requestReconciliation(router.activeView)
-      }
-    }
   }
 
   // Cross-file access goes through an explicit property: ids are file-scoped,

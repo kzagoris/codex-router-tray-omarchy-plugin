@@ -217,14 +217,30 @@ Panel {
   // label while the rest of the panel merely disables.
   property string activeControlKey: ""
 
+  function recoveryForArgs(args) {
+    var verb = String(args[0] || "")
+    if (verb === "service") {
+      var sub = String(args[1] || "")
+      if (sub === "stop") return "offline"
+      if (sub === "start" || sub === "restart") return "online"
+    }
+    return "none"
+  }
+
   function runAction(domain, key, label, args) {
     if (!root.service || !root.controlProcess || root.controlProcess.mutationRunning) return
-    // Offline, only service commands make sense — starting it above all.
     if (!root.summary.online && !root.controlProcess.isServiceCommand(args)) return
+    var originatingView = root.service && root.service.isSupportedView(root.service.activeView)
+      ? root.service.activeView : root.activeViewName
+    var recovery = root.recoveryForArgs(args)
     root.actionDomain = domain
     root.activeControlKey = key
     root.controlProcess.runControl(label, args, function(error) {
-      if (error === null) root.actionDomain = ""
+      if (error === null) {
+        root.actionDomain = ""
+        if (root.service && typeof root.service.reportMutationOutcome === "function")
+          root.service.reportMutationOutcome(originatingView, recovery)
+      }
       root.activeControlKey = ""
     })
   }

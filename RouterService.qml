@@ -144,6 +144,8 @@ Item {
   // Stable diagnostic for lifecycle callers: its value is captured when the
   // service command settles, never sampled when the delayed recovery fires.
   readonly property string lifecycleRecoveryOrigin: root._lifecycleRecoveryOrigin
+  property string _pendingLifecycleOrigin: ""
+  property int _pendingLifecycleHealthBarrier: 0
 
   onReaderPresentChanged: {
     if (!root.readerPresent) {
@@ -653,20 +655,8 @@ Item {
     root.stageDemand("view-entry", view)
   }
 
-  // Public semantic intents. Reconciliation still carries the broad recipe
-  // until ticket 16 maps real mutation outcomes to reconciliation recipes.
   function requestRefresh() {
-    // A caller key written after the shell started is invisible until somebody
-    // asks for it again, and Refresh is the operator waiting on that answer.
-    // Part of the intent, not a step a caller composes around it. A capability
-    // already in hand cannot be made more available by re-reading it, so the
-    // ordinary Refresh asks for nothing. The adapter short-circuits the same
-    // case; deciding whether a read is useful is reader policy, and it should
-    // not depend on an adapter internal to stay true.
     if (!root.hasCallerSecret) root.recheckCallerSecret()
-    // A known-good health fact is enough to start the authenticated recipe,
-    // but Refresh still samples health. Starting both effects here avoids
-    // putting useful authenticated work behind an answer we already have.
     if (root._healthInFlight) root._refreshHealthPending = true
     else root.pollHealth()
     root.stageDemand("refresh", root.activeView)
@@ -675,10 +665,30 @@ Item {
     root.stageDemand("reconciliation", originatingView)
   }
 
-  // The hook mutation reconciliation calls when a change may have moved
-  // Snapshot settings, so the cached payload stops answering demand until it
-  // is re-read. It reads nothing itself; the next demand does. Ticket 16 maps
-  // which mutation outcomes are relevant enough to call it.
+  // Semantic reconciliation: a successful mutation reports the View it
+  // originated from and whether Router recovery is required. The reader
+  // maps that outcome to the right reads without receiving raw Control CLI
+  // arguments. Recovery "online" waits for a post-command online health
+  // answer before the originating View's authenticated read; "offline"
+  // expresses an offline expectation for a future stop caller; "none"
+  // reconciles immediately.
+  function reportMutationOutcome(originatingView, recovery) {
+    var view = root.isSupportedView(originatingView) ? originatingView : root.activeView
+    var rec = String(recovery || "none")
+    if (rec === "online") {
+      root._pendingLifecycleOrigin = view
+      root._pendingLifecycleHealthBarrier = root._nextHealthGeneration
+      root._lifecycleRecoveryOrigin = view
+      cadence.scheduleRecovery()
+    } else if (rec === "offline") {
+      root._pendingLifecycleOrigin = ""
+      root._pendingLifecycleHealthBarrier = 0
+      root.pollHealth()
+    } else {
+      root.stageDemand("reconciliation", view)
+    }
+  }
+
   function invalidateSnapshotCache() {
     root._snapshotCacheValid = false
   }
@@ -758,8 +768,6 @@ Item {
   function applyHealth(status, text, generation) {
     if (generation !== undefined && generation < root._committedHealthGeneration) return
     if (status !== 200) {
-      // Unreachable or unhappy: drop the last known payload wholesale so
-      // "offline" always means "not trusting stale data".
       root.health = null
       root._committedHealthGeneration = generation || root._committedHealthGeneration
       root.updateRouterSummary()
@@ -775,6 +783,14 @@ Item {
         if (live !== "") root.lastProviderName = live
       }
       root.updateRouterSummary()
+      if (root._pendingLifecycleOrigin !== "" && root.online
+          && generation !== undefined
+          && generation > root._pendingLifecycleHealthBarrier) {
+        var pendingView = root._pendingLifecycleOrigin
+        root._pendingLifecycleOrigin = ""
+        root._pendingLifecycleHealthBarrier = 0
+        root.stageDemand("reconciliation", pendingView)
+      }
       root.consumePendingDemand()
     } catch (e) {
       console.warn("codex-router-tray", "Bad /health payload:", e)
@@ -799,23 +815,12 @@ Item {
     return demand.forcesSnapshot === true || !root._snapshotCacheValid
   }
 
-  // Which facts a demand is willing to pay for. Entering a View reads exactly
-  // what that View renders — entering Status must not buy Provider facts it
-  // never shows. Refresh keeps the broad recipe because it means every Panel
-  // fact; its all-View commits are decided in dispatchDataRecipe.
-  // Reconciliation keeps the broad recipe until ticket 16 narrows it to the
-  // mutation's semantic outcome.
   function commandsForDemand(demand) {
     if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
-    // The data cadence exists for visible Usage alone: Provider usage is the
-    // one authenticated fact a Router request changes autonomously, so it is
-    // the one fact worth polling. Provider setup never polls, and no other
-    // View carries an autonomously-changing fact.
     if (demand.kind === "cadence")
       return demand.view === "Usage" ? ["provider_usage"] : []
-    // The Proof exception buys exactly the Snapshot that carries the verdict,
-    // and no unrelated Usage work.
     if (demand.kind === "checking-proof") return ["control_snapshot"]
+    if (demand.kind === "reconciliation") return root.requiredCommandsForView(demand.view)
     return ["control_snapshot", "provider_setup", "provider_usage"]
   }
 
@@ -990,12 +995,10 @@ Item {
     })
   }
 
-  // A Control CLI service command restarts the Router. The reader owns the
-  // recovery policy (including the delay); the clock only owns elapsed time.
+  // Legacy lifecycle entry retained for workflow tests. New callers use
+  // reportMutationOutcome with recovery "online".
   function reconcileAfterServiceCommand(originatingView) {
-    root._lifecycleRecoveryOrigin = root.isSupportedView(originatingView)
-      ? originatingView : root.activeView
-    cadence.scheduleRecovery()
+    root.reportMutationOutcome(originatingView, "online")
   }
 
   // ------------------------------------------------------- web panel link
@@ -1042,7 +1045,6 @@ Item {
     }
     onRecoveryDelayDue: {
       root.pollHealth()
-      root.requestReconciliation(root._lifecycleRecoveryOrigin)
     }
   }
 }
