@@ -9,7 +9,7 @@ The widget replaces the Tauri desktop companion on Linux. It adds no second
 runtime and no Rust toolchain. The code is QML inside the Omarchy shell
 (Quickshell).
 
-Plugin id: `kzagoris.codex-router-tray` · Version 0.3.0 · License: MIT
+Plugin id: `kzagoris.codex-router-tray` · Version 0.5.0 · License: MIT
 
 <p align="center">
   <img src="preview.png" alt="The four panel views: Status, Usage, Providers, and Models" width="900">
@@ -155,6 +155,21 @@ omarchy restart shell
 The folder must be a real copy. A plugin folder must not contain a symlink.
 `omarchy plugin validate` refuses a symlink, and the marketplace refuses it
 too.
+
+## Remove
+
+Turn the plugin off, then delete its folder:
+
+```sh
+omarchy plugin disable kzagoris.codex-router-tray
+rm -rf ~/.config/omarchy/plugins/kzagoris.codex-router-tray
+omarchy restart shell
+```
+
+The plugin writes nothing outside that folder. Its settings live in the
+widget entry in `~/.config/omarchy/shell.json`; delete that entry to remove
+them. The plugin never changes the router, the caller secret or any file in
+`~/.codex/`.
 
 ## Settings
 
