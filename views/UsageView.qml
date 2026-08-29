@@ -10,15 +10,18 @@ import "../ui"
 // sends in provider usage — balances answer "what will fund my next request"
 // and are value-only unless the metric carries a genuine used-percent.
 //
-// The panel hands over the service, the live clock and the palette. The
-// provider selection is session-scoped state owned here: it survives a
-// close/open round-trip and resets when the shell restarts.
+// The panel hands over the active-View projection: this View's own Provider
+// facts, its loading state, and the account-usage sub-state with its own
+// value, loading, error and freshness. Entering the view is a declaration the
+// panel makes, so nothing here composes a read; the provider selection is
+// session-scoped state owned here — it survives a close/open round-trip and
+// resets when the shell restarts.
 Item {
   id: usageRoot
 
   // ------------------------------------------------------------- contract
 
-  property var service: null
+  property var projection: null
   property double nowMs: 0
 
   // Palette, handed over by the panel.
@@ -38,15 +41,16 @@ Item {
 
   // ------------------------------------------------------- derived state
 
-  // One guard for every section that needs live, authenticated data.
-  readonly property bool controlsReachable: !!service && service.online
-    && service.hasCallerSecret
+  // One guard for every section that needs live, authenticated data: the
+  // reader's global blocking condition is exactly that question.
+  readonly property bool controlsReachable: !!usageRoot.projection
+    && usageRoot.projection.blockingReason === ""
 
   // Providers that have actually carried traffic — the usage switch would
   // be unusable with all thirty-plus catalog entries on it.
   readonly property var trafficProviders: {
     var out = []
-    var usage = service ? service.providerUsage : null
+    var usage = usageRoot.projection ? usageRoot.projection.providerUsage : null
     var list = usage && Array.isArray(usage.providers) ? usage.providers : []
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
@@ -111,31 +115,40 @@ Item {
   }
 
   // Quota windows come from the slow account call plus whatever the usage
-  // payload carries locally; both sources dedupe inside buildQuotaCards.
-  readonly property var quotaCards: (service && service.accountUsageEnabled)
+  // payload carries locally; both sources dedupe inside buildQuotaCards. The
+  // section exists only when the operator opted in — the projection mirrors
+  // that flag beside the account sub-state it gates.
+  readonly property var quotaCards: usageRoot.projection
+    && usageRoot.projection.accountUsageEnabled
     ? Model.buildQuotaCards({
-        account: service.accountUsage,
-        providerUsage: service.providerUsage,
-        providerSetup: service.providerSetup
+        account: usageRoot.projection.accountUsage,
+        providerUsage: usageRoot.projection.providerUsage,
+        providerSetup: usageRoot.projection.providerSetup
       })
     : []
 
-  readonly property bool quotaUnavailable: !!service && service.accountUsageEnabled
-    && !service.accountUsage && service.accountUsageFailed
+  // The quota call timed out and left nothing to show. Keyed on the sub-
+  // state's own error, so a retry clears it while the replacement attempt
+  // runs and core Provider facts never decide this line. No opt-in check
+  // here: the projection blanks the error whenever the operator has not
+  // opted in.
+  readonly property bool quotaUnavailable: !!usageRoot.projection
+    && !usageRoot.projection.accountUsage
+    && usageRoot.projection.accountUsageError !== ""
 
   // Balances come straight out of provider_usage: no slow account call, so
   // they are safe to show whenever a configured provider reports them.
-  readonly property var balanceRows: (service && service.providerUsage)
+  readonly property var balanceRows: usageRoot.projection
     ? Model.buildBalanceRows({
-        providerUsage: service.providerUsage,
-        providerSetup: service.providerSetup
+        providerUsage: usageRoot.projection.providerUsage,
+        providerSetup: usageRoot.projection.providerSetup
       })
     : []
 
-  readonly property var accountNotes: (service && service.providerUsage)
+  readonly property var accountNotes: usageRoot.projection
     ? Model.buildAccountNotes({
-        providerUsage: service.providerUsage,
-        providerSetup: service.providerSetup
+        providerUsage: usageRoot.projection.providerUsage,
+        providerSetup: usageRoot.projection.providerSetup
       })
     : []
 
@@ -154,7 +167,8 @@ Item {
     // than an empty frame that flickers in a moment later.
     Text {
       textFormat: Text.PlainText
-      visible: usageRoot.service && usageRoot.service.dataLoading && !usageRoot.selectedProvider
+      visible: usageRoot.projection && usageRoot.projection.refreshing
+        && !usageRoot.selectedProvider
         && usageRoot.quotaCards.length === 0 && usageRoot.balanceRows.length === 0
         && usageRoot.accountNotes.length === 0
       width: parent.width
@@ -168,7 +182,7 @@ Item {
 
     Text {
       textFormat: Text.PlainText
-      visible: !!usageRoot.service && !usageRoot.service.dataLoading
+      visible: !!usageRoot.projection && !usageRoot.projection.refreshing
         && usageRoot.trafficProviders.length === 0 && usageRoot.quotaCards.length === 0
         && usageRoot.balanceRows.length === 0 && usageRoot.accountNotes.length === 0
       width: parent.width

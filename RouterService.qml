@@ -274,6 +274,12 @@ Item {
       ? activeViewProjectionObject.snapshot.chatgptSession : ({})
     property var providerSetup: null
     property var providerUsage: null
+    // The account-usage sub-state is independent from the core facts above.
+    // `accountUsageEnabled` mirrors the operator's opt-in so the View can
+    // decide whether its LIMITS section exists at all; when it is off the
+    // other four hold their empty shape (null value, not loading, no error,
+    // never fresh).
+    property bool accountUsageEnabled: false
     property var accountUsage: null
     property bool accountUsageLoading: false
     property string accountUsageError: ""
@@ -383,6 +389,7 @@ Item {
     var accountLoading = hasAccountUsage && root.accountUsageLoading
     var accountError = hasAccountUsage && blocking === "" ? root.accountUsageError : ""
     var accountFreshAt = hasAccountUsage ? root.accountUsageFreshAt : 0
+    if (projection.accountUsageEnabled !== root.accountUsageEnabled) { projection.accountUsageEnabled = root.accountUsageEnabled; changed = true }
     if (projection.accountUsage !== accountValue) { projection.accountUsage = accountValue; changed = true }
     if (projection.accountUsageLoading !== accountLoading) { projection.accountUsageLoading = accountLoading; changed = true }
     if (projection.accountUsageError !== accountError) { projection.accountUsageError = accountError; changed = true }
@@ -400,9 +407,14 @@ Item {
     var record = root.viewRecord(view)
     record.refreshing++
     record.readToken++
+    // Clearing here is what "starting a replacement read" means: the old
+    // error goes while a real attempt runs. A read that then ends without a
+    // verdict restores it (see finishViewRead).
+    var read = { record: record, token: record.readToken,
+      previousError: record.readError, epoch: root._routerEpoch }
     record.readError = ""
     root.updateActiveViewProjection()
-    return { record: record, token: record.readToken }
+    return read
   }
 
   function finishViewRead(read, required, staged, failedError, allRequiredFresh, freshAtCeiling) {
@@ -426,6 +438,13 @@ Item {
     // a coherent new revision, and it must not overwrite retained facts or
     // invent an operator-facing error.
     if (!allRequiredFresh) {
+      // No verdict: a read that neither succeeded nor failed — a cadence that
+      // bought nothing, or bought less than the View still lacks — must not
+      // retire a failure nothing replaced. Restore what it cleared, unless
+      // the Router changed reachability underneath the read: global recovery
+      // has already retired stale failure prose.
+      if (read.epoch === root._routerEpoch)
+        record.readError = read.previousError || ""
       root.updateActiveViewProjection()
       return
     }
@@ -685,18 +704,28 @@ Item {
   // Which facts a demand is willing to pay for. Entering a View reads exactly
   // what that View renders — entering Status must not buy Provider facts it
   // never shows. Every other demand keeps the broad recipe until the ticket
-  // that owns it says otherwise: 13 for the checking Proof, 15 for Refresh,
-  // 16 for reconciliation.
+  // that owns it says otherwise: 15 for Refresh, 16 for reconciliation.
   function commandsForDemand(demand) {
     if (demand.kind === "view-entry") return root.requiredCommandsForView(demand.view)
-    // Providers and Models have no authenticated cadence: their facts change
-    // only through operator action, and Snapshot never polls.
-    if (demand.kind === "cadence"
-        && (demand.view === "Providers" || demand.view === "Models")) return []
+    // The data cadence exists for visible Usage alone: Provider usage is the
+    // one authenticated fact a Router request changes autonomously, so it is
+    // the one fact worth polling. Provider setup never polls, and no other
+    // View carries an autonomously-changing fact.
+    if (demand.kind === "cadence")
+      return demand.view === "Usage" ? ["provider_usage"] : []
     // The Proof exception buys exactly the Snapshot that carries the verdict,
     // and no unrelated Usage work.
     if (demand.kind === "checking-proof") return ["control_snapshot"]
     return ["control_snapshot", "provider_setup", "provider_usage"]
+  }
+
+  // Account usage is an operator intent, not a cadence fact: the slow quota
+  // call runs when the operator arrives at Usage and when Refresh asks for
+  // all Panel facts — never because a timer ticked.
+  function shouldReadAccountUsage(demand) {
+    if (!root.accountUsageEnabled) return false
+    if (demand.kind === "view-entry") return demand.view === "Usage"
+    return demand.kind === "refresh"
   }
 
   // The one place a Router command is paired with the fact it fills.
@@ -749,7 +778,8 @@ Item {
     var freshAtCeiling = 0
 
     for (var factIndex = 0; factIndex < required.length; factIndex++) {
-      if (required[factIndex] === "control_snapshot" && !readsSnapshot) {
+      var fact = required[factIndex]
+      if (fact === "control_snapshot" && !readsSnapshot) {
         // A valid cache is this View's Snapshot answer for demand that asked
         // for the View's facts. An ordinary cadence is not such demand: it
         // read nothing here, so it leaves the read incomplete rather than
@@ -758,6 +788,16 @@ Item {
           staged.snapshot = root.snapshot
           freshAtCeiling = root._snapshotFreshAt
         } else allRequiredFresh = false
+      } else if (fact !== "control_snapshot" && commands.indexOf(fact) === -1) {
+        // A View fact this demand does not buy. Provider setup does not poll,
+        // so a Usage cadence round is complete only while the setup its View
+        // renders is still committed: the record's retained fact answers,
+        // and without one the read stays incomplete — silently, exactly like
+        // a cadence that bought nothing at all.
+        var retainedProp = root.factPropertyFor(fact)
+        if (viewRead.record[retainedProp] !== null && viewRead.record[retainedProp] !== undefined)
+          staged[retainedProp] = viewRead.record[retainedProp]
+        else allRequiredFresh = false
       } else {
         requiredPending++
       }
@@ -853,7 +893,7 @@ Item {
       root.invokeShared(rounds[i].command, {}, receiverFor(rounds[i]))
     }
 
-    refreshAccountUsage()
+    if (root.shouldReadAccountUsage(demand)) root.refreshAccountUsage()
   }
 
   // The command boundary, rather than a particular View recipe, owns
@@ -886,8 +926,11 @@ Item {
     return generation
   }
 
-  // Fully independent: own flag, no share of dataLoading/pending, so a hung
-  // quota call never disables Refresh or freezes the footer (PLAN.md §5).
+  // Fully independent sub-state: own flag, no share of dataLoading/pending,
+  // so a hung quota call never disables Refresh or freezes the footer
+  // (PLAN.md §5) and its slower schedule never reads as core Usage
+  // freshness. Triggered only by shouldReadAccountUsage — Usage entry and
+  // explicit Refresh — never by a cadence tick.
   function refreshAccountUsage() {
     if (!root.accountUsageEnabled || root.accountUsageLoading) return
     if (!root.online || !root.hasCallerSecret) return
@@ -936,7 +979,12 @@ Item {
     // Router health remains live for the bar widget even when the Panel is
     // closed; this is reader policy, not a clock default.
     healthCadenceActive: true
+    // The data cadence is the visible-Usage cadence: Provider usage is the
+    // one fact a Router request changes autonomously. Switching away from
+    // Usage — or closing the Panel — stops it here rather than letting ticks
+    // buy facts nobody is reading.
     dataCadenceActive: (root.panelOpen || root.readerPresent)
+      && root.activeView === "Usage"
       && root.online && root.hasCallerSecret
     // The exception ends the moment its condition, its View or the reader
     // does, so it can never decay into general Snapshot polling.

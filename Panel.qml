@@ -415,7 +415,7 @@ Panel {
           UsageView {
             visible: root.selectedView === 1
             width: parent.width
-            service: root.service
+            projection: root.viewProjection
             nowMs: root.nowMs
             foreground: root.foreground
             urgent: root.urgent
